@@ -38,13 +38,14 @@ export class AmazonSalesByAsin {
   @Column({ nullable: true, type: 'int', default: 0, name: 'shipped_units' })
   shippedUnits: number | null;
 
-  @Column({ nullable: true, type: 'decimal', precision: 10, scale: 2, default: 0.0, name: 'ordered_revenue_amount' })
-  orderedRevenueAmount: number | null;
-
-  @Column({ nullable: true, default: null, name: 'ordered_revenue_currency' })
-  orderedRevenueCurrency: string | null;
-
-  @Column({ nullable: true, type: 'int', default: 0, name: 'ordered_units' })
-  orderedUnits: number | null;
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0.0, name: 'ordered_revenue_amount' })
+  orderedRevenueAmount: number;
+  
+  @Column({ default: 'USD', name: 'ordered_revenue_currency' })
+  orderedRevenueCurrency: string;
+  
+  @Column({ type: 'int', default: 0, name: 'ordered_units' })
+  orderedUnits: number;
+  
  
 }

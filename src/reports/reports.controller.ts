@@ -11,14 +11,15 @@ export class ReportsController {
     @Query('endDate') endDateParam: string,
   ) {
     try {
-      // Parse dynamic start and end dates if provided, otherwise use defaults
-      const currentDate = new Date();
+      // Set default start date to December 29, 2024, if not provided
       const startDate = startDateParam
         ? new Date(startDateParam)
-        : new Date(currentDate.setMonth(currentDate.getMonth() - 1)); // Default: 1 month ago
-      const endDate = endDateParam ? new Date(endDateParam) : new Date(); // Default: Today
+        : new Date('2024-12-29T00:00:00Z');
 
-      // Ensure the dates are correct
+      // Default end date to today if not provided
+      const endDate = endDateParam ? new Date(endDateParam) : new Date();
+
+      // Ensure the dates are valid
       if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
         throw new Error('Invalid date format provided.');
       }
@@ -26,37 +27,31 @@ export class ReportsController {
       console.log('Start Date:', startDate);
       console.log('End Date:', endDate);
 
-      // Keep track of successfully fetched reports to avoid re-fetching
       const successfullyFetchedReports = new Set();
 
-      // Helper function to try fetching a report and retry on failure
       const fetchReportWithRetry = async (reportType: string) => {
         try {
           console.log(`Fetching report: ${reportType}`);
-          // Ensure no duplicate data is stored
           await this.reportsService.fetchAndStoreReports(reportType, startDate, endDate);
-          successfullyFetchedReports.add(reportType); // Mark as successfully fetched
+          successfullyFetchedReports.add(reportType);
           console.log(`${reportType} fetch process finished.`);
         } catch (error) {
           console.error(`Error fetching and storing ${reportType}:`, error.message);
         }
       };
 
-      // Fetch reports in the correct order: Inventory -> Sales -> Forecast
       const reportTypes = [
         'GET_VENDOR_INVENTORY_REPORT',
         'GET_VENDOR_SALES_REPORT',
         'GET_VENDOR_FORECAST_REPORT',
       ];
 
-      // First attempt to fetch the reports in order, skipping already processed ones
       for (const reportType of reportTypes) {
         if (!successfullyFetchedReports.has(reportType)) {
           await fetchReportWithRetry(reportType);
         }
       }
 
-      // Retry any reports that failed
       for (const reportType of reportTypes) {
         if (!successfullyFetchedReports.has(reportType)) {
           console.log(`Retrying report: ${reportType}`);
