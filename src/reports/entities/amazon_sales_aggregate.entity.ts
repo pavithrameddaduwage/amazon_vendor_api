@@ -1,47 +1,37 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
-import { AmazonSalesReport } from './amazon_sales_report.entity';
+import { Entity, PrimaryColumn, Column } from 'typeorm';
 
 @Entity('amazon_sales_aggregate')
 export class AmazonSalesAggregate {
-  @PrimaryGeneratedColumn()
-  salesAggregateId: number;  
+  @PrimaryColumn({ name: 'start_date' })
+  startDate: string;
 
-  @ManyToOne(() => AmazonSalesReport, (report) => report.salesAggregates)
-  @JoinColumn({ name: 'salesAggregateId' })  // Foreign key reference to AmazonSalesReport's id
-  report: AmazonSalesReport;
+  @PrimaryColumn({ name: 'end_date' })
+  endDate: string;
 
-  @Column({ nullable: true, default: null, name: 'start_date' })
-  startDate: string | null;
+  @Column({ type: 'int', default: 0, name: 'customer_returns' })
+  customerReturns: number;
 
-  @Column({ nullable: true, default: null, name: 'end_date' })
-  endDate: string | null;
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0.0, name: 'ordered_revenue_amount' })
+  orderedRevenueAmount: number;
 
-  @Column({ nullable: true, type: 'int', default: 0, name: 'customer_returns' })
-  customerReturns: number | null;
+  @Column({ default: 'USD', name: 'ordered_revenue_currency' })
+  orderedRevenueCurrency: string;
 
-  @Column({ nullable: true, type: 'decimal', precision: 10, scale: 2, default: 0.0, name: 'ordered_revenue_amount' })
-  orderedRevenueAmount: number | null;
+  @Column({ type: 'int', default: 0, name: 'ordered_units' })
+  orderedUnits: number;
 
-  @Column({ nullable: true, default: null, name: 'ordered_revenue_currency' })
-  orderedRevenueCurrency: string | null;
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0.0, name: 'shipped_cogs_amount' })
+  shippedCogsAmount: number;
 
-  @Column({ nullable: true, type: 'int', default: 0, name: 'ordered_units' })
-  orderedUnits: number | null;
+  @Column({ default: 'USD', name: 'shipped_cogs_currency' })
+  shippedCogsCurrency: string;
 
-  @Column({ nullable: true, type: 'decimal', precision: 10, scale: 2, default: 0.0, name: 'shipped_cogs_amount' })
-  shippedCogsAmount: number | null;
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0.0, name: 'shipped_revenue_amount' })
+  shippedRevenueAmount: number;
 
-  @Column({ nullable: true, default: null, name: 'shipped_cogs_currency' })
-  shippedCogsCurrency: string | null;
+  @Column({ default: 'USD', name: 'shipped_revenue_currency' })
+  shippedRevenueCurrency: string;
 
-  @Column({ nullable: true, type: 'decimal', precision: 10, scale: 2, default: 0.0, name: 'shipped_revenue_amount' })
-  shippedRevenueAmount: number | null;
-
-  @Column({ nullable: true, default: null, name: 'shipped_revenue_currency' })
-  shippedRevenueCurrency: string | null;
-
-  @Column({ nullable: true, type: 'int', default: 0, name: 'shipped_units' })
-  shippedUnits: number | null;
-
-   
+  @Column({ type: 'int', default: 0, name: 'shipped_units' })
+  shippedUnits: number;
 }

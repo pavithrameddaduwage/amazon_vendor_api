@@ -374,142 +374,144 @@ async insertAsinInventoryData(inventoryByAsinData: any) {
  
  
  
-  async processVendorSalesReportWithoutReport(data: any) {
-    try {
-      // Validate incoming data
-      if (!data || typeof data !== 'object') {
-        console.warn('⚠️ Invalid or empty data. Skipping processing.');
-        return;
-      }
-  
-      let salesAggregate = [];
-      let salesByAsin = [];
-  
-      // Extract data from the incoming payload
-      if (Array.isArray(data)) {
-        salesByAsin = data;
-      } else {
-        salesAggregate = data.salesAggregate || [];
-        salesByAsin = data.salesByAsin || [];
-      }
-  
-      // Fetch existing report or create a new one
-      let savedReport = await this.salesReportRepository.findOne({
+
+ 
+
+async processVendorSalesReportWithoutReport(data: any) {
+  try {
+    if (!data || typeof data !== "object") {
+      console.warn("⚠️ Invalid or empty data. Skipping processing.");
+      return;
+    }
+
+    let salesAggregate: any[] = [];
+    let salesByAsin: any[] = [];
+
+    if (Array.isArray(data)) {
+      salesByAsin = data;
+    } else {
+      salesAggregate = data.salesAggregate ?? [];
+      salesByAsin = data.salesByAsin ?? [];
+    }
+
+    // 🔹 Process Sales Aggregate
+    if (salesAggregate.length > 0) {
+      const existingAggregates = await this.salesAggregateRepository.find({
         where: {
-          reportType: 'Type',
-          reportPeriod: 'Period',
+          startDate: In(salesAggregate.map((a) => a.startDate)),
+          endDate: In(salesAggregate.map((a) => a.endDate)),
         },
       });
-  
-      if (!savedReport) {
-        const report = new AmazonSalesReport();
-        report.reportType = 'Type';
-        report.reportPeriod = 'Period';
-        report.sellingProgram = 'Program';
-        report.distributorView = 'View';
-        report.lastUpdatedDate = new Date();
-        report.dataStartTime = new Date();
-        report.dataEndTime = new Date();
-        report.marketplaceIds = ['US'];
-  
-        savedReport = await this.salesReportRepository.save(report);
-      }
-  
-      // Process Sales Aggregate Data
-      if (salesAggregate.length > 0) {
-        const aggregatesToInsert = [];
-        const existingAggregates = await this.salesAggregateRepository.find({
-          where: {
-            report: savedReport,
-            startDate: In(salesAggregate.map(a => a.startDate)),
-            endDate: In(salesAggregate.map(a => a.endDate)),
-          },
-        });
-  
-        const existingAggregateIds = existingAggregates.map(a => `${a.startDate}-${a.endDate}`);
-  
-        for (const aggregate of salesAggregate) {
-          if (existingAggregateIds.includes(`${aggregate.startDate}-${aggregate.endDate}`)) {
-            continue;
-          }
-  
-          const aggregateRecord = new AmazonSalesAggregate();
-          aggregateRecord.report = savedReport;
-          aggregateRecord.startDate = aggregate.startDate || null;
-          aggregateRecord.endDate = aggregate.endDate || null;
-          aggregateRecord.customerReturns = aggregate.customerReturns ?? 0;
-          aggregateRecord.orderedRevenueAmount = aggregate.orderedRevenue?.amount ?? 0;
-          aggregateRecord.orderedRevenueCurrency = 'USD';
-          aggregateRecord.orderedUnits = aggregate.orderedUnits ?? 0;
-          aggregateRecord.shippedCogsAmount = aggregate.shippedCogs?.amount ?? 0;
-          aggregateRecord.shippedCogsCurrency = 'USD';
-          aggregateRecord.shippedRevenueAmount = aggregate.shippedRevenue?.amount ?? 0;
-          aggregateRecord.shippedRevenueCurrency = 'USD';
-          aggregateRecord.shippedUnits = aggregate.shippedUnits ?? 0;
-  
-          aggregatesToInsert.push(aggregateRecord);
-        }
-  
-        if (aggregatesToInsert.length > 0) {
-          await this.salesAggregateRepository.save(aggregatesToInsert);
+
+      const existingAggregateMap = new Map(
+        existingAggregates.map((a) => [`${a.startDate}-${a.endDate}`, a])
+      );
+
+      for (const aggregate of salesAggregate) {
+        const key = `${aggregate.startDate}-${aggregate.endDate}`;
+        const existing = existingAggregateMap.get(key);
+
+        if (existing) {
+          // ✅ Ensure no null values
+          Object.assign(existing, {
+            customerReturns: aggregate.customerReturns ?? existing.customerReturns ?? 0,
+            orderedRevenueAmount: aggregate.orderedRevenue?.amount ?? existing.orderedRevenueAmount ?? 0,
+            orderedRevenueCurrency: aggregate.orderedRevenue?.currencyCode ?? existing.orderedRevenueCurrency ?? "USD",
+            orderedUnits: aggregate.orderedUnits ?? existing.orderedUnits ?? 0,
+            shippedCogsAmount: aggregate.shippedCogs?.amount ?? existing.shippedCogsAmount ?? 0,
+            shippedCogsCurrency: aggregate.shippedCogs?.currencyCode ?? existing.shippedCogsCurrency ?? "USD",
+            shippedRevenueAmount: aggregate.shippedRevenue?.amount ?? existing.shippedRevenueAmount ?? 0,
+            shippedRevenueCurrency: aggregate.shippedRevenue?.currencyCode ?? existing.shippedRevenueCurrency ?? "USD",
+            shippedUnits: aggregate.shippedUnits ?? existing.shippedUnits ?? 0,
+          });
+          await this.salesAggregateRepository.save(existing);
+        } else {
+          // 🆕 Insert new record
+          const newAggregate = Object.assign(new AmazonSalesAggregate(), {
+            startDate: aggregate.startDate ?? null,
+            endDate: aggregate.endDate ?? null,
+            customerReturns: aggregate.customerReturns ?? 0,
+            orderedRevenueAmount: aggregate.orderedRevenue?.amount ?? 0,
+            orderedRevenueCurrency: aggregate.orderedRevenue?.currencyCode ?? "USD",
+            orderedUnits: aggregate.orderedUnits ?? 0,
+            shippedCogsAmount: aggregate.shippedCogs?.amount ?? 0,
+            shippedCogsCurrency: aggregate.shippedCogs?.currencyCode ?? "USD",
+            shippedRevenueAmount: aggregate.shippedRevenue?.amount ?? 0,
+            shippedRevenueCurrency: aggregate.shippedRevenue?.currencyCode ?? "USD",
+            shippedUnits: aggregate.shippedUnits ?? 0,
+          });
+          await this.salesAggregateRepository.save(newAggregate);
         }
       }
-  
-      // Process Sales by ASIN Data
-      if (salesByAsin.length > 0) {
-        const asinToInsert = [];
-  
-        // Fetch existing records for the given report, ASINs, and start dates
-        const existingAsinRecords = await this.salesByAsinRepository.find({
-          where: {
-            report: savedReport,
-            asin: In(salesByAsin.map(a => a.asin)),
-            startDate: In(salesByAsin.map(a => a.startDate)),
-          },
-        });
-  
-        for (const asinData of salesByAsin) {
-          if (!asinData.asin) continue;
-  
-          // Check for existing records with the same ASIN and startDate
-          const isDuplicate = existingAsinRecords.some(record =>
-            record.asin === asinData.asin &&
-            record.startDate === asinData.startDate &&
-            (record.shippedUnits !== asinData.shippedUnits ||
-              record.shippedRevenueAmount !== asinData.shippedRevenue?.amount ||
-              record.orderedUnits !== asinData.orderedUnits ||
-              record.orderedRevenueAmount !== asinData.orderedRevenue?.amount ||
-              record.shippedCogsAmount !== asinData.shippedCogs?.amount)
-          );
-  
-          if (isDuplicate) continue;
-  
-          const byAsin = new AmazonSalesByAsin();
-          byAsin.report = savedReport;
-          byAsin.asin = asinData.asin || null;
-          byAsin.startDate = asinData.startDate || null;
-          byAsin.endDate = asinData.endDate || null;
-          byAsin.customerReturns = asinData.customerReturns ?? 0;
-          byAsin.shippedCogsAmount = asinData.shippedCogs?.amount ?? 0;
-          byAsin.shippedCogsCurrency = 'USD';
-          byAsin.shippedRevenueAmount = asinData.shippedRevenue?.amount ?? 0;
-          byAsin.shippedRevenueCurrency = 'USD';
-          byAsin.shippedUnits = asinData.shippedUnits ?? 0;
-          byAsin.orderedRevenueAmount = asinData.orderedRevenue?.amount ?? 0;
-          byAsin.orderedRevenueCurrency = 'USD';
-          byAsin.orderedUnits = asinData.orderedUnits ?? 0;
-  
-          asinToInsert.push(byAsin);
-        }
-  
-        if (asinToInsert.length > 0) {
-          await this.salesByAsinRepository.save(asinToInsert);
+    }
+
+    // 🔹 Process Sales by ASIN
+    if (salesByAsin.length > 0) {
+      const existingAsinRecords = await this.salesByAsinRepository.find({
+        where: {
+          asin: In(salesByAsin.map((a) => a.asin)),
+          startDate: In(salesByAsin.map((a) => a.startDate)),
+        },
+      });
+
+      const existingAsinMap = new Map(
+        existingAsinRecords.map((record) => [`${record.asin}-${record.startDate}`, record])
+      );
+
+      for (const asinData of salesByAsin) {
+        if (!asinData.asin) continue;
+        const key = `${asinData.asin}-${asinData.startDate}`;
+        const existing = existingAsinMap.get(key);
+
+        if (existing) {
+          // ✅ Ensure no null values
+          Object.assign(existing, {
+            startDate: asinData.startDate ?? existing.startDate,
+            endDate: asinData.endDate ?? existing.endDate,
+            customerReturns: asinData.customerReturns ?? existing.customerReturns ?? 0,
+            orderedRevenueAmount: asinData.orderedRevenue?.amount ?? existing.orderedRevenueAmount ?? 0,
+            orderedRevenueCurrency: asinData.orderedRevenue?.currencyCode ?? existing.orderedRevenueCurrency ?? "USD",
+            orderedUnits: asinData.orderedUnits ?? existing.orderedUnits ?? 0,
+            shippedCogsAmount: asinData.shippedCogs?.amount ?? existing.shippedCogsAmount ?? 0,
+            shippedCogsCurrency: asinData.shippedCogs?.currencyCode ?? existing.shippedCogsCurrency ?? "USD",
+            shippedRevenueAmount: asinData.shippedRevenue?.amount ?? existing.shippedRevenueAmount ?? 0,
+            shippedRevenueCurrency: asinData.shippedRevenue?.currencyCode ?? existing.shippedRevenueCurrency ?? "USD",
+            shippedUnits: asinData.shippedUnits ?? existing.shippedUnits ?? 0,
+          });
+          await this.salesByAsinRepository.save(existing);
+        } else {
+          // 🆕 Insert new record
+          const newAsinRecord = Object.assign(new AmazonSalesByAsin(), {
+            asin: asinData.asin ?? null,
+            startDate: asinData.startDate ?? null,
+            endDate: asinData.endDate ?? null,
+            customerReturns: asinData.customerReturns ?? 0,
+            orderedRevenueAmount: asinData.orderedRevenue?.amount ?? 0,
+            orderedRevenueCurrency: asinData.orderedRevenue?.currencyCode ?? "USD",
+            orderedUnits: asinData.orderedUnits ?? 0,
+            shippedCogsAmount: asinData.shippedCogs?.amount ?? 0,
+            shippedCogsCurrency: asinData.shippedCogs?.currencyCode ?? "USD",
+            shippedRevenueAmount: asinData.shippedRevenue?.amount ?? 0,
+            shippedRevenueCurrency: asinData.shippedRevenue?.currencyCode ?? "USD",
+            shippedUnits: asinData.shippedUnits ?? 0,
+          });
+          await this.salesByAsinRepository.save(newAsinRecord);
         }
       }
-    } catch (err) {
-      console.error('❌ Critical Error Processing Vendor Sales Report:', err);
+    }
+  } catch (err: any) {
+    if (err.code === "23505") {
+      console.warn(`⚠️ Duplicate entry detected: ${err.detail.match(/\((.*?)\)/)?.[1]}`);
+    } else {
+      console.warn("⚠️ An unexpected error occurred while processing the sales report.", err);
     }
   }
+}
+
+
+
+
+
   
  
  

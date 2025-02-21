@@ -31,10 +31,6 @@ export class AmazonSalesReport {
   @Column('text', { array: true })
   marketplaceIds: string[];
 
-  @OneToMany(() => AmazonSalesAggregate, (aggregate) => aggregate.report)
-  salesAggregates: AmazonSalesAggregate[];
-
-  @OneToMany(() => AmazonSalesByAsin, (salesByAsin) => salesByAsin.report)
-  salesByAsins: AmazonSalesByAsin[];
+  
  
 }

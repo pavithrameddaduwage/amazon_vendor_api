@@ -16,7 +16,7 @@ async function bootstrap() {
   console.log('Starting report fetch process...');
 
   // Fixed start date (January 1, 2025) for all reports
-  const startDate = new Date('2025-01-01T00:00:00Z'); // UTC midnight on January 1, 2025
+  const startDate = new Date('2024-12-29T00:00:00Z'); // UTC midnight on January 1, 2025
 
   // Set end date to today
   const endDate = new Date();
