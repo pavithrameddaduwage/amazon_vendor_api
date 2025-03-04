@@ -7,19 +7,17 @@ export class ReportsController {
 
   @Get('fetch/all')
   async fetchAndProcessAllReports(
-    @Query('startDate') startDateParam: string,
-    @Query('endDate') endDateParam: string,
+    @Query('startDate') startDateParam?: string,
+    @Query('endDate') endDateParam?: string,
   ) {
     try {
-      // Set default start date to December 29, 2024, if not provided
-      const startDate = startDateParam
-        ? new Date(startDateParam)
-        : new Date('2024-12-29T00:00:00Z');
+      if (!startDateParam || !endDateParam) {
+        throw new Error('Start and end dates are required.');
+      }
 
-      // Default end date to today if not provided
-      const endDate = endDateParam ? new Date(endDateParam) : new Date();
-
-      // Ensure the dates are valid
+      const startDate = new Date(startDateParam);
+      const endDate = new Date(endDateParam);
+      
       if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
         throw new Error('Invalid date format provided.');
       }
@@ -27,41 +25,17 @@ export class ReportsController {
       console.log('Start Date:', startDate);
       console.log('End Date:', endDate);
 
-      const successfullyFetchedReports = new Set();
-
-      const fetchReportWithRetry = async (reportType: string) => {
-        try {
-          console.log(`Fetching report: ${reportType}`);
-          await this.reportsService.fetchAndStoreReports(reportType, startDate, endDate);
-          successfullyFetchedReports.add(reportType);
-          console.log(`${reportType} fetch process finished.`);
-        } catch (error) {
-          console.error(`Error fetching and storing ${reportType}:`, error.message);
-        }
-      };
-
       const reportTypes = [
-        'GET_VENDOR_INVENTORY_REPORT',
         'GET_VENDOR_SALES_REPORT',
+        'GET_VENDOR_INVENTORY_REPORT',
         'GET_VENDOR_FORECAST_REPORT',
       ];
 
       for (const reportType of reportTypes) {
-        if (!successfullyFetchedReports.has(reportType)) {
-          await fetchReportWithRetry(reportType);
-        }
+        await this.reportsService.fetchAndStoreReports(reportType, startDate, endDate);
       }
 
-      for (const reportType of reportTypes) {
-        if (!successfullyFetchedReports.has(reportType)) {
-          console.log(`Retrying report: ${reportType}`);
-          await fetchReportWithRetry(reportType);
-        }
-      }
-
-      return {
-        message: `Processing all reports from ${startDate.toISOString()} to ${endDate.toISOString()}`,
-      };
+      return { message: `Processing all reports from ${startDate.toISOString()} to ${endDate.toISOString()}` };
     } catch (error) {
       console.error('Error processing reports:', error);
       return { message: 'Error processing reports', error: error.message };

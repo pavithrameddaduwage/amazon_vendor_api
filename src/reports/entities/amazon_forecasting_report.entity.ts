@@ -1,7 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, OneToMany } from 'typeorm';
 import { AmazonForecastByAsin } from './amazon_forecasting_by_asin.entity';
 
-@Entity('amazon_forecast_report_entity')
+@Entity('amazon_forecast_report')
 export class AmazonForecastingReport {
   @PrimaryGeneratedColumn()
   reportId: number;
@@ -23,7 +23,5 @@ export class AmazonForecastingReport {
 
   @Column({ type: 'date', nullable: true })
   endDate: Date | null;
-
-  @OneToMany(() => AmazonForecastByAsin, forecastByAsin => forecastByAsin.report)
-  forecastByAsins: AmazonForecastByAsin[];
+ 
 }

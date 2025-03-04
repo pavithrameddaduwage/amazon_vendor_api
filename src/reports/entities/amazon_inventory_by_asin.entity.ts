@@ -1,22 +1,19 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne } from 'typeorm';
+import { Entity, PrimaryColumn, Column, ManyToOne } from 'typeorm';
 import { AmazonInventoryReport } from './amazon_inventory_report.entity';
 
 @Entity('amazon_inventory_by_asin')
 export class AmazonInventoryByAsin {
-  @PrimaryGeneratedColumn()
-  id: number;
-
-  @ManyToOne(() => AmazonInventoryReport, (report) => report.inventoryByAsins)
-  report: AmazonInventoryReport;
-
-  @Column({ type: 'date', nullable: true, name: 'start_date' })
+  @PrimaryColumn({ type: 'date', name: 'start_date' })
   startDate: Date;
 
-  @Column({ type: 'date', nullable: true, name: 'end_date' })
+  @PrimaryColumn({ type: 'date', name: 'end_date' })
   endDate: Date;
 
-  @Column({ nullable: true, name: 'asin' })
+  @PrimaryColumn({ name: 'asin' })
   asin: string;
+
+  @ManyToOne(() => AmazonInventoryReport, (report) => report.inventoryByAsins, { onDelete: 'CASCADE' })
+  report: AmazonInventoryReport;
 
   @Column({ type: 'float', nullable: true, name: 'sourceable_product_out_of_stock_rate' })
   sourceableProductOutOfStockRate: number;

@@ -12,19 +12,20 @@ import { AmazonSalesByAsin } from './reports/entities/amazon_sales_by_asin.entit
  
 import { AmazonVendorInventory } from './reports/entities/amazon_vendor_inventory.entity';
 import { AmazonSalesReport } from './reports/entities/amazon_sales_report.entity';
+import { ReportStatusEntity } from './reports/entities/ReportStatusEntity';
 
 @Module({
   imports: [
-    // Import ConfigModule and load the .env file
+
     ConfigModule.forRoot({
-      isGlobal: true, // Make the configuration globally available
+      isGlobal: true, 
     }),
 
-    // TypeOrmModule setup with database configurations
+   
     TypeOrmModule.forRoot({
-      type: 'postgres',  // Database type
-      host: process.env.DATABASE_HOST,  // Use the values from .env
-      port: +process.env.DATABASE_PORT, // Ensure the port is a number
+      type: 'postgres', 
+      host: process.env.DATABASE_HOST,  
+      port: +process.env.DATABASE_PORT,  
       username: process.env.DATABASE_USER,
       password: process.env.DATABASE_PASSWORD,
       database: process.env.DATABASE_NAME,
@@ -37,11 +38,12 @@ import { AmazonSalesReport } from './reports/entities/amazon_sales_report.entity
         AmazonSalesByAsin,
         AmazonSalesAggregate,
         AmazonVendorInventory,
+        ReportStatusEntity,
       ],
-      synchronize: true,  // Set to false in production
+      synchronize: true,  
     }),
 
-    // Importing your custom modules
+    
     ReportsModule,
     AuthModule,
   ],

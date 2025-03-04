@@ -22,6 +22,7 @@ import { AmazonForecastByAsin } from './entities/amazon_forecasting_by_asin.enti
 import { AmazonInventoryByAsin } from './entities/amazon_inventory_by_asin.entity';
 import { AmazonInventoryReport } from './entities/amazon_inventory_report.entity';
 import { AmazonVendorInventory } from './entities/amazon_vendor_inventory.entity';
+import { ReportStatusEntity } from './entities/ReportStatusEntity';
  
  
 @Injectable()
@@ -49,6 +50,8 @@ export class ReportsService {
     private readonly salesByAsinRepository: Repository<AmazonSalesByAsin>,
     @InjectRepository(AmazonSalesAggregate)
     private readonly salesAggregateRepository: Repository<AmazonSalesAggregate>,
+    @InjectRepository(ReportStatusEntity)
+    private readonly reportStatusRepository: Repository<ReportStatusEntity>,
   ) {}
  
   private async ensureAccessToken() {
@@ -88,18 +91,11 @@ export class ReportsService {
  
   private async fetchReports(reportType: string, startDate: Date, endDate: Date) {
     const reportPeriod = 'WEEK';
-    const minStartDate = new Date('2025-02-03T00:00:00Z');
-
-    if (startDate < minStartDate) startDate = minStartDate;
-
-    const dataStartTime = this.getSundayOfWeek(startDate).toISOString();
-    const dataEndTime = this.getSaturdayOfWeek(endDate).toISOString();
-
+    
     let url = `${this.baseUrl}/reports/2021-06-30/reports?reportTypes=${reportType}` +
               `&processingStatuses=DONE&marketplaceIds=ATVPDKIKX0DER&pageSize=100` +
               `&createdSince=${this.dateFormat(startDate)}&createdUntil=${this.dateFormat(endDate)}` +
-              `&reportPeriod=${reportPeriod}&dataStartTime=${dataStartTime}&dataEndTime=${dataEndTime}` +
-              `&distributorView=SOURCING&sellingProgram=RETAIL`;
+              `&reportPeriod=${reportPeriod}&distributorView=SOURCING&sellingProgram=RETAIL`;
 
     let allReports: any[] = [];
     const processedReportIds = new Set<string>();
@@ -109,7 +105,7 @@ export class ReportsService {
     try {
         await this.ensureAccessToken();
 
-        do {
+        while (url) {
             try {
                 const response = await firstValueFrom(
                     this.httpService.get(url, {
@@ -124,33 +120,26 @@ export class ReportsService {
                     for (const report of response.data.reports) {
                         const reportDocumentId = report.reportDocumentId || report.reportId || null;
 
-                        if (reportDocumentId && processedReportIds.has(reportDocumentId)) {
-                            continue;
-                        }
-
-                        allReports.push(report);
-                        if (reportDocumentId) {
+                        if (reportDocumentId && !processedReportIds.has(reportDocumentId)) {
+                            allReports.push(report);
                             processedReportIds.add(reportDocumentId);
                         }
                     }
                 }
 
-                const nextToken = response.data.nextToken;
-                if (nextToken) {
-                    url = `${this.baseUrl}/reports/2021-06-30/reports?reportTypes=${reportType}` +
-                          `&processingStatuses=DONE&marketplaceIds=ATVPDKIKX0DER&pageSize=100` +
-                          `&createdSince=${this.dateFormat(startDate)}&createdUntil=${this.dateFormat(endDate)}` +
-                          `&reportPeriod=${reportPeriod}&dataStartTime=${dataStartTime}&dataEndTime=${dataEndTime}` +
-                          `&distributorView=SOURCING&sellingProgram=RETAIL` +
-                          `&nextToken=${encodeURIComponent(nextToken)}`;
-                } else {
-                    break;
-                }
+                // Pagination
+                url = response.data.nextToken
+                    ? `${this.baseUrl}/reports/2021-06-30/reports?reportTypes=${reportType}` +
+                      `&processingStatuses=DONE&marketplaceIds=ATVPDKIKX0DER&pageSize=100` +
+                      `&createdSince=${this.dateFormat(startDate)}&createdUntil=${this.dateFormat(endDate)}` +
+                      `&reportPeriod=${reportPeriod}&distributorView=SOURCING&sellingProgram=RETAIL` +
+                      `&nextToken=${encodeURIComponent(response.data.nextToken)}`
+                    : '';
 
                 await this.delay(backoffDelay);
                 backoffDelay = Math.min(backoffDelay * 2, 16000);
             } catch (err) {
-                if (err.response && err.response.status === 429) {
+                if (err.response?.status === 429) {
                     retryCount++;
                     if (retryCount > this.maxRetries) {
                         throw new Error('Max retries reached. Could not fetch reports.');
@@ -161,7 +150,7 @@ export class ReportsService {
                     throw err;
                 }
             }
-        } while (true);
+        }
     } catch (error) {
         console.error(`Error fetching reports of type ${reportType}:`, error.message || error);
     }
@@ -211,90 +200,105 @@ export class ReportsService {
  
   public async fetchAndStoreReports(reportType: string, startDate: Date, endDate: Date) {
     const reportTypes = [
-      { type: 'GET_VENDOR_INVENTORY_REPORT', process: this.insertAsinInventoryData.bind(this) },  
-      { type: 'GET_VENDOR_SALES_REPORT', process: this.processVendorSalesReportWithoutReport.bind(this) },  
-      // { type: 'GET_VENDOR_FORECAST_REPORT', process: this.processVendorSalesReportWithoutReport.bind(this) },  
+        { type: 'GET_VENDOR_SALES_REPORT', process: this.processVendorSalesReportWithoutReport.bind(this) },
+            // { type: 'GET_VENDOR_INVENTORY_REPORT', process: this.insertAsinInventoryData.bind(this) },  
+            // { type: 'GET_VENDOR_FORECASTING_REPORT', process: this.processVendorForecastingReport.bind(this) },
     ];
- 
-    let completedSteps = new Set(); // Track completed report types
- 
-    // Process each report in order
+
+    let completedSteps = new Set();
+
     for (const { type, process } of reportTypes) {
-      if (completedSteps.has(type)) {
-        console.log(`✅ ${type} already processed. Skipping...`);
-        continue;
-      }
- 
-      try {
-        console.log(`🚀 Fetching reports of type: ${type}`);
-        const reports = await this.fetchReports(type, startDate, endDate); // Pass startDate and endDate here
-        console.log(`✅ Fetched ${reports.length} reports of type: ${type}`);
- 
-        for (const report of reports) {
-          const reportDocumentId = report.reportDocumentId || report.reportId || null;
- 
-          if (reportDocumentId) {
-            try {
-              console.log(`🚀 Fetching report document with ID: ${reportDocumentId}`);
-              const reportDocument = await this.fetchReportDocument(reportDocumentId);
-              if (!reportDocument) {
-                console.log(`❌ No data in the report document for ${reportDocumentId}.`);
-                continue;
-              }
- 
-              const { salesAggregate, salesByAsin, inventoryByAsin } = reportDocument;
- 
-              // Insert the report first to ensure it's not duplicated
-              const reportExists = await this.amazonInventoryReportRepository.findOne({ where: { reportType: type } });
-              if (reportExists) {
-                console.log(`⚠️ Report of type ${type} already exists. Skipping report insertion.`);
-              } else {
-                const reportData = new AmazonInventoryReport();
-                reportData.reportType = type;
-                await this.amazonInventoryReportRepository.save(reportData);
-                console.log(`✅ Report of type ${type} inserted.`);
-              }
- 
-              // Process inventory data in parallel with sales/forecast data
-              const promises = [];
- 
-              if (inventoryByAsin) {
-                console.log('🚀 Processing inventory by ASIN data...');
-                promises.push(this.insertAsinInventoryData(inventoryByAsin));
-              }
- 
-              if (salesAggregate || salesByAsin) {
-                console.log('🚀 Processing sales data...');
-                promises.push(this.processVendorSalesReportWithoutReport({ salesAggregate, salesByAsin }));
-              }
- 
-              if (salesAggregate || salesByAsin) {
-                console.log('🚀 Processing forecast data...');
-                promises.push(this.processVendorSalesReportWithoutReport({ salesAggregate, salesByAsin })); // Reuse logic for forecast
-              }
- 
-              // Wait for all processing to complete
-              await Promise.all(promises);
-              console.log(`✅ Completed all processing steps for report type: ${type}`);
- 
-            } catch (docError) {
-              console.error(`❌ Error fetching report document (ID: ${reportDocumentId}):`, docError.message || docError);
-            }
-          } else {
-            console.log('❌ No report document ID found.');
-          }
+        if (completedSteps.has(type)) {
+            console.log(`✅ ${type} already processed. Skipping...`);
+            continue;
         }
- 
-        completedSteps.add(type);
-        console.log(`✅ Completed processing for ${type}.`);
- 
-      } catch (error) {
-        console.error(`❌ Error processing reports of type ${type}:`, error.message || error);
-      }
+
+        try {
+            console.log(`🚀 Fetching reports of type: ${type}`);
+            const reports = await this.fetchReports(type, startDate, endDate);
+            console.log(`✅ Fetched ${reports.length} reports of type: ${type}`);
+
+            const processPromises = reports.map(async (report) => {
+                const reportDocumentId = report.reportDocumentId || report.reportId || null;
+                if (!reportDocumentId) {
+                    console.log('❌ No report document ID found. Skipping...');
+                    return;
+                }
+
+                let reportStatus = new ReportStatusEntity();
+                reportStatus.reportType = type;
+                reportStatus.startDate = startDate;
+                reportStatus.endDate = endDate;
+                reportStatus.status = 'IN_PROGRESS';
+
+                reportStatus = await this.reportStatusRepository.save(reportStatus);
+
+                try {
+                    console.log(`🚀 Fetching report document with ID: ${reportDocumentId}`);
+                    const reportDocument = await this.fetchReportDocument(reportDocumentId);
+                    if (!reportDocument) {
+                        console.log(`❌ No data in the report document for ${reportDocumentId}.`);
+
+                        await this.reportStatusRepository.update(reportStatus.id, {
+                            status: 'FAILED',
+                            errorMessage: 'No data in report document.',
+                            retryCount: reportStatus.retryCount + 1,
+                        });
+
+                        return;
+                    }
+
+                    const { salesAggregate, salesByAsin, inventoryByAsin } = reportDocument;
+                    const reportExists = await this.amazonInventoryReportRepository.findOne({ where: { reportType: type } });
+
+                    if (!reportExists) {
+                        const reportData = new AmazonInventoryReport();
+                        reportData.reportType = type;
+                        await this.amazonInventoryReportRepository.save(reportData);
+                        console.log(`✅ Report of type ${type} inserted.`);
+                    } else {
+                        console.log(`⚠️ Report of type ${type} already exists. Skipping insertion.`);
+                    }
+
+                    const tasks = [];
+                    if (inventoryByAsin) {
+                        console.log('🚀 Processing inventory by ASIN data...');
+                        tasks.push(this.insertAsinInventoryData(inventoryByAsin));
+                    }
+                    if (salesAggregate || salesByAsin) {
+                        console.log('🚀 Processing sales data...');
+                        tasks.push(this.processVendorSalesReportWithoutReport({ salesAggregate, salesByAsin }));
+                    }
+
+                    await Promise.all(tasks);
+                    console.log(`✅ Completed processing for report ${reportDocumentId}`);
+
+                    await this.reportStatusRepository.update(reportStatus.id, {
+                        status: 'COMPLETED',
+                    });
+
+                } catch (docError) {
+                    console.error(`❌ Error fetching report document (ID: ${reportDocumentId}):`, docError.message || docError);
+
+                    await this.reportStatusRepository.update(reportStatus.id, {
+                        status: 'FAILED',
+                        errorMessage: docError.message || 'Unknown error',
+                        retryCount: reportStatus.retryCount + 1,
+                    });
+                }
+            });
+
+            await Promise.all(processPromises);
+            completedSteps.add(type);
+            console.log(`✅ Completed processing for ${type}.`);
+        } catch (error) {
+            console.error(`❌ Error processing reports of type ${type}:`, error.message || error);
+        }
     }
- 
     console.log('✅ All report types processed.');
 }
+
+
  
 async insertAsinInventoryData(inventoryByAsinData: any) {
   try {
