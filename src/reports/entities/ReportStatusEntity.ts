@@ -8,13 +8,16 @@ export class ReportStatusEntity {
     @Column()
     reportType: string;
 
+    @Column()
+    reportId: string;   
+
     @Column({ type: 'timestamp' })
     startDate: Date;
 
     @Column({ type: 'timestamp' })
     endDate: Date;
 
-    @Column({ default: 'IN_PROGRESS' })  
+    @Column({ default: 'IN_PROGRESS' })
     status: string;
 
     @Column({ nullable: true })

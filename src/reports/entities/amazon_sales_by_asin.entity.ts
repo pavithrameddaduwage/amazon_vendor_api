@@ -1,4 +1,6 @@
-import { Entity, PrimaryColumn, Column } from 'typeorm';
+import { Entity, PrimaryColumn, Column, ManyToOne } from 'typeorm';
+import { AmazonSalesAggregate } from './amazon_sales_aggregate.entity';
+import { Exclude } from 'class-transformer';
 
 @Entity('amazon_sales_by_asin')
 export class AmazonSalesByAsin {

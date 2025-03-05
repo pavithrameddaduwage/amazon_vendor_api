@@ -5,6 +5,7 @@ import { AuthModule } from 'src/auth.module';
 
 import { ReportsController } from './reports.controller';
 import { ReportsService } from './reports.service';
+import { SalesReportService } from './sales-report.service';
 
 // Entities
 import { AmazonSalesAggregate } from './entities/amazon_sales_aggregate.entity';
@@ -16,59 +17,37 @@ import { AmazonInventoryReport } from './entities/amazon_inventory_report.entity
 import { AmazonVendorInventory } from './entities/amazon_vendor_inventory.entity';
 import { AmazonSalesReport } from './entities/amazon_sales_report.entity';
 import { ReportStatusEntity } from './entities/ReportStatusEntity';
-import { AmazonForecastByAsinRepository } from './entities/repsitory/amazon-forecast-by-asin.repository';
-import { AmazonForecastingReportRepository } from './entities/repsitory/amazon-forecasting-report.repository';
-import { AmazonInventoryByAsinRepository } from './entities/repsitory/amazon-inventory-by-asin.repository';
-import { AmazonInventoryReportRepository } from './entities/repsitory/amazon-inventory-report.repository';
+
+// Repositories
 import { AmazonSalesAggregateRepository } from './entities/repsitory/amazon-sales-aggregate.repository';
 import { AmazonSalesByAsinRepository } from './entities/repsitory/amazon-sales-by-asin.repository';
-import { AmazonSalesReportRepository } from './entities/repsitory/amazon-sales-report.repository';
-import { AmazonVendorInventoryRepository } from './entities/repsitory/amazon-vendor-inventory.repository';
 import { ReportStatusRepository } from './entities/repsitory/ReportStatusRepository';
- 
-
- 
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([
-      AmazonSalesReport,
       AmazonSalesAggregate,
       AmazonSalesByAsin,
-      AmazonForecastByAsin,
-      AmazonForecastingReport,
-      AmazonInventoryByAsin,
-      AmazonInventoryReport,
-      AmazonVendorInventory,
-      ReportStatusEntity, 
+      AmazonSalesReport,
+      ReportStatusEntity,
     ]),
-    HttpModule,
+    HttpModule, 
     AuthModule,
   ],
   providers: [
     ReportsService,
-    AmazonForecastByAsinRepository,
-    AmazonForecastingReportRepository,
-    AmazonInventoryByAsinRepository,
-    AmazonInventoryReportRepository,
+    SalesReportService,
     AmazonSalesAggregateRepository,
     AmazonSalesByAsinRepository,
-    AmazonSalesReportRepository,
-    AmazonVendorInventoryRepository,
-    ReportStatusRepository,  
+    ReportStatusRepository,
   ],
   controllers: [ReportsController],
   exports: [
+    SalesReportService,
     ReportsService,
-    AmazonForecastByAsinRepository,
-    AmazonForecastingReportRepository,
-    AmazonInventoryByAsinRepository,
-    AmazonInventoryReportRepository,
     AmazonSalesAggregateRepository,
     AmazonSalesByAsinRepository,
-    AmazonSalesReportRepository,
-    AmazonVendorInventoryRepository,
-    ReportStatusRepository,  
+    ReportStatusRepository,
   ],
 })
 export class ReportsModule {}

@@ -8,7 +8,7 @@ export class DatabaseService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      await this.connection.query('SELECT 1'); // Try a simple query to check the connection
+      await this.connection.query('SELECT 1');  
       console.log('Database connected successfully');
     } catch (error) {
       console.error('Database connection error:', error);

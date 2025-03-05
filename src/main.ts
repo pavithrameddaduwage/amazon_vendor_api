@@ -5,15 +5,11 @@ import { ReportsService } from './reports/reports.service';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const reportsService = app.get(ReportsService);
-
-  const now = new Date();
-  const currentYear = now.getFullYear();
-  const startDate = new Date(Date.UTC(currentYear, 0, 1, 0, 0, 0, 0));
-  const endDate = new Date(Date.UTC(currentYear, 0, 31, 23, 59, 59, 999));
-
-  console.log('Start Date:', startDate.toISOString());
-  console.log('End Date:', endDate.toISOString());
-
+  const startDate = new Date(2024, 11, 29);   
+  const endDate = new Date(2025, 0, 31);   
+  console.log('Start Date:', startDate.toDateString());
+  console.log('End Date:', endDate.toDateString());
+  
   const reportTypes = [
     'GET_VENDOR_SALES_REPORT',
     'GET_VENDOR_INVENTORY_REPORT',
@@ -21,7 +17,13 @@ async function bootstrap() {
   ];
 
   for (const reportType of reportTypes) {
-    await reportsService.fetchAndStoreReports(reportType, startDate, endDate);
+    try {
+      console.log(`Fetching report: ${reportType}`);
+      await reportsService.fetchAndStoreReports(reportType, startDate, endDate);
+      console.log(`Successfully processed: ${reportType}`);
+    } catch (error) {
+      console.error(`Error processing ${reportType}:`, error);
+    }
   }
 
   console.log('All reports processed.');
