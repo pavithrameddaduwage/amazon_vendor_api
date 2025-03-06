@@ -52,75 +52,88 @@ export class SalesReportService {
  
   private async fetchReports(reportType: string, startDate: Date, endDate: Date): Promise<any[]> {
     const reportPeriod = 'DAY';
-    let url = `${this.baseUrl}/reports/2021-06-30/reports?reportTypes=${reportType}` +
-              `&processingStatuses=DONE&marketplaceIds=ATVPDKIKX0DER&pageSize=100` +
-              `&createdSince=${this.dateFormat(startDate)}&createdUntil=${this.dateFormat(endDate)}` +
-              `&reportPeriod=${reportPeriod}&distributorView=SOURCING&sellingProgram=RETAIL`;
+    let baseFetchUrl = `${this.baseUrl}/reports/2021-06-30/reports?reportTypes=${reportType}` +
+                       `&processingStatuses=DONE&marketplaceIds=ATVPDKIKX0DER&pageSize=100` +
+                       `&createdSince=${this.dateFormat(startDate)}&createdUntil=${this.dateFormat(endDate)}` +
+                       `&reportPeriod=${reportPeriod}&distributorView=SOURCING&sellingProgram=RETAIL`;
 
     let allReports: any[] = [];
     const processedReportIds = new Set<string>();
-    let retryCount = 0;
-    let backoffDelay = 1000;
-    let requestCount = 0;
-    let nextToken: string | null = null;   
+    let failedRequests: string[] = [];
+    
+    let requestQueue: string[] = [baseFetchUrl];
 
     try {
         await this.ensureAccessToken();
 
-        while (url) {
-            requestCount++;
-            console.log(`Fetching reports (Request #${requestCount}) from URL: ${url}`);
+        while (requestQueue.length > 0) {
+            let url = requestQueue.shift();
+            if (!url) continue;
 
-            try {
-                const response = await firstValueFrom(
-                    this.httpService.get(url, {
-                        headers: {
-                            Authorization: `Bearer ${this.currentAccessToken}`,
-                            'x-amz-access-token': this.currentAccessToken,
-                        },
-                    })
-                );
+            let retryCount = 0;
+            let backoffDelay = 1000;
 
-           
-                if (response.data.reports) {
-                    for (const report of response.data.reports) {
-                        const reportDocumentId = report.reportDocumentId || report.reportId || null;
-                        if (reportDocumentId && !processedReportIds.has(reportDocumentId)) {
-                            allReports.push(report);
-                            processedReportIds.add(reportDocumentId);
+            while (retryCount <= this.maxRetries) {
+                try {
+                    console.log(`Fetching reports from URL: ${url}`);
+
+                    const response = await firstValueFrom(
+                        this.httpService.get(url, {
+                            headers: {
+                                Authorization: `Bearer ${this.currentAccessToken}`,
+                                'x-amz-access-token': this.currentAccessToken,
+                            },
+                        })
+                    );
+
+                    if (response.data.reports) {
+                        for (const report of response.data.reports) {
+                            const reportDocumentId = report.reportDocumentId || report.reportId || null;
+                            if (reportDocumentId && !processedReportIds.has(reportDocumentId)) {
+                                allReports.push(report);
+                                processedReportIds.add(reportDocumentId);
+                            }
                         }
+                        console.log(`Fetched ${response.data.reports.length} reports.`);
                     }
-                    console.log(`Fetched ${response.data.reports.length} reports in Request #${requestCount}`);
-                }
- 
-                nextToken = response.data.nextToken || null;
-                if (nextToken) {
-                    console.log(`Next token found: ${nextToken}`);
-                    url = `${this.baseUrl}/reports/2021-06-30/reports?nextToken=${encodeURIComponent(nextToken)}`;
-                } else {
-                    console.log("No next token found, stopping pagination.");
-                    url = null;   
-                }
 
-               
-                retryCount = 0;
-                backoffDelay = 1000;
-
-            } catch (err) {
-                if (err.response?.status === 429) {   
-                    retryCount++;
-                    if (retryCount > this.maxRetries) {
-                        throw new Error('Max retries reached. Could not fetch reports.');
+                    let nextToken = response.data.nextToken || null;
+                    if (nextToken) {
+                        console.log(`Next token found: ${nextToken}`);
+                        requestQueue.push(`${this.baseUrl}/reports/2021-06-30/reports?nextToken=${encodeURIComponent(nextToken)}`);
+                    } else {
+                        console.log("No next token found, stopping pagination.");
                     }
-                    console.warn(`Rate limit hit. Retrying in ${backoffDelay}ms...`);
-                    await this.delay(backoffDelay);
-                    backoffDelay = Math.min(backoffDelay * 2, 32000);   
-                } else {
-                    console.error(`Error fetching reports: ${err.message || err}`);
-                    throw err;
+
+                    retryCount = 0;
+                    break;
+
+                } catch (err) {
+                    if (err.response?.status === 429) {
+                        retryCount++;
+                        if (retryCount > this.maxRetries) {
+                            console.warn(`Max retries reached for URL: ${url}. Adding to failed requests.`);
+                            failedRequests.push(url);
+                            break;
+                        }
+                        console.warn(`Rate limit hit. Retrying in ${backoffDelay}ms...`);
+                        await this.delay(backoffDelay);
+                        backoffDelay = Math.min(backoffDelay * 2, 32000);
+                    } else {
+                        console.error(`Error fetching reports: ${err.message || err}`);
+                        failedRequests.push(url);
+                        break;
+                    }
                 }
             }
         }
+
+        if (failedRequests.length > 0) {
+            console.log(`Retrying ${failedRequests.length} failed requests...`);
+            requestQueue = [...failedRequests];
+            failedRequests = [];
+        }
+
     } catch (error) {
         console.error(`Error fetching reports of type ${reportType}:`, error.message || error);
     }
@@ -128,6 +141,7 @@ export class SalesReportService {
     console.log(`Total reports fetched: ${allReports.length}`);
     return allReports;
 }
+
 
  
   private async fetchReportDocument(reportDocumentId: string, retryCount = 0): Promise<any> {
@@ -169,45 +183,46 @@ export class SalesReportService {
     const reportTypes = [
         { type: 'GET_VENDOR_SALES_REPORT', process: this.processVendorSalesReportWithoutReport.bind(this) },
     ];
- 
+
     for (const { type } of reportTypes) {
         try {
             const reports = await this.fetchReports(type, startDate, endDate);
- 
+
             const processPromises = reports.map(async (report) => {
                 const reportDocumentId = report.reportDocumentId || report.reportId || null;
                 if (!reportDocumentId) return;
- 
+
                 let reportStatus = await this.reportStatusRepository.findOne({ where: { reportId: reportDocumentId } });
- 
-                if (reportStatus && reportStatus.status === 'COMPLETED') return;
- 
+
+                if (reportStatus?.status === 'COMPLETED') return;
+
                 if (!reportStatus) {
-                    reportStatus = new ReportStatusEntity();
-                    reportStatus.reportType = type;
-                    reportStatus.reportId = reportDocumentId;
-                    reportStatus.startDate = startDate;
-                    reportStatus.endDate = endDate;
-                    reportStatus.status = 'IN_PROGRESS';
-                    reportStatus.retryCount = 0;
-                    reportStatus = await this.reportStatusRepository.save(reportStatus);
+                    reportStatus = this.reportStatusRepository.create({
+                        reportType: type,
+                        reportId: reportDocumentId,
+                        startDate,
+                        endDate,
+                        status: 'IN_PROGRESS',
+                        retryCount: 0,
+                    });
+                    await this.reportStatusRepository.save(reportStatus);
                 }
- 
+
                 await this.processReportWithRetries(reportStatus);
             });
- 
+
             await Promise.all(processPromises);
         } catch (error) {
             console.error(`Error processing reports of type ${type}:`, error.message || error);
         }
     }
 }
- 
+
 private async processReportWithRetries(reportStatus: ReportStatusEntity) {
     const reportDocumentId = reportStatus.reportId;
     let retryCount = reportStatus.retryCount;
     let backoffDelay = 1000;
- 
+
     while (true) {
         try {
             const reportDocument = await this.fetchReportDocument(reportDocumentId);
@@ -217,183 +232,194 @@ private async processReportWithRetries(reportStatus: ReportStatusEntity) {
                     errorMessage: 'No data in report document.',
                     retryCount: retryCount + 1,
                 });
- 
+
                 retryCount++;
                 await this.delay(backoffDelay);
                 backoffDelay = Math.min(backoffDelay * 2, 16000);
                 continue;
             }
- 
+
             const { salesAggregate, salesByAsin } = reportDocument;
             const tasks = [];
 
             if (salesAggregate || salesByAsin) {
                 tasks.push(this.processVendorSalesReportWithoutReport({ salesAggregate, salesByAsin }));
             }
- 
+
             await Promise.all(tasks);
- 
+
             await this.reportStatusRepository.update(reportStatus.id, {
                 status: 'COMPLETED',
                 errorMessage: null,
             });
- 
+
             console.log(`Successfully processed report ${reportDocumentId}`);
             break;
- 
+
         } catch (docError) {
             console.error(`Error processing report ${reportDocumentId}:`, docError.message || docError);
- 
+
             await this.reportStatusRepository.update(reportStatus.id, {
                 status: 'FAILED',
                 errorMessage: docError.message || 'Unknown error',
                 retryCount: retryCount + 1,
             });
- 
+
             retryCount++;
             await this.delay(backoffDelay);
             backoffDelay = Math.min(backoffDelay * 2, 16000);
         }
     }
 }
+
  
 
 async processVendorSalesReportWithoutReport(data: any) {
-    try {
+  try {
       if (!data || typeof data !== "object") {
-        console.warn("Invalid or empty data. Skipping processing.");
-        return;
+          console.warn("Invalid or empty data. Skipping processing.");
+          return;
       }
-  
+
       let salesAggregate: any[] = [];
       let salesByAsin: any[] = [];
-  
+
       if (Array.isArray(data)) {
-        salesByAsin = data;
+          salesByAsin = data;
       } else {
-        salesAggregate = data.salesAggregate ?? [];
-        salesByAsin = data.salesByAsin ?? [];
+          salesAggregate = data.salesAggregate ?? [];
+          salesByAsin = data.salesByAsin ?? [];
       }
-  
 
       
       if (salesAggregate.length > 0) {
-        const existingAggregates = await this.salesAggregateRepository.find({
-          where: {
-            startDate: In(salesAggregate.map((a) => a.startDate)),
-            endDate: In(salesAggregate.map((a) => a.endDate)),
-          },
-        });
-  
-        const existingAggregateMap = new Map(
-          existingAggregates.map((a) => [`${a.startDate}-${a.endDate}`, a])
-        );
-  
-        for (const aggregate of salesAggregate) {
-          const key = `${aggregate.startDate}-${aggregate.endDate}`;
-          const existing = existingAggregateMap.get(key);
-  
-          if (existing) {
-        
-            
-            Object.assign(existing, {
-              customerReturns: aggregate.customerReturns ?? existing.customerReturns ?? 0,
-              orderedRevenueAmount: aggregate.orderedRevenue?.amount ?? existing.orderedRevenueAmount ?? 0,
-              orderedRevenueCurrency: aggregate.orderedRevenue?.currencyCode ?? existing.orderedRevenueCurrency ?? "USD",
-              orderedUnits: aggregate.orderedUnits ?? existing.orderedUnits ?? 0,
-              shippedCogsAmount: aggregate.shippedCogs?.amount ?? existing.shippedCogsAmount ?? 0,
-              shippedCogsCurrency: aggregate.shippedCogs?.currencyCode ?? existing.shippedCogsCurrency ?? "USD",
-              shippedRevenueAmount: aggregate.shippedRevenue?.amount ?? existing.shippedRevenueAmount ?? 0,
-              shippedRevenueCurrency: aggregate.shippedRevenue?.currencyCode ?? existing.shippedRevenueCurrency ?? "USD",
-              shippedUnits: aggregate.shippedUnits ?? existing.shippedUnits ?? 0,
-            });
-            await this.salesAggregateRepository.save(existing);
-          } else {
-         
-            
-            const newAggregate = Object.assign(new AmazonSalesAggregate(), {
-              startDate: aggregate.startDate ?? null,
-              endDate: aggregate.endDate ?? null,
-              customerReturns: aggregate.customerReturns ?? 0,
-              orderedRevenueAmount: aggregate.orderedRevenue?.amount ?? 0,
-              orderedRevenueCurrency: aggregate.orderedRevenue?.currencyCode ?? "USD",
-              orderedUnits: aggregate.orderedUnits ?? 0,
-              shippedCogsAmount: aggregate.shippedCogs?.amount ?? 0,
-              shippedCogsCurrency: aggregate.shippedCogs?.currencyCode ?? "USD",
-              shippedRevenueAmount: aggregate.shippedRevenue?.amount ?? 0,
-              shippedRevenueCurrency: aggregate.shippedRevenue?.currencyCode ?? "USD",
-              shippedUnits: aggregate.shippedUnits ?? 0,
-            });
-            await this.salesAggregateRepository.save(newAggregate);
+          salesAggregate = salesAggregate.filter(a => a.startDate === a.endDate);
+          if (salesAggregate.length > 0) {
+              const existingAggregates = await this.salesAggregateRepository.find({
+                  where: {
+                      startDate: In(salesAggregate.map(a => a.startDate)),
+                      endDate: In(salesAggregate.map(a => a.endDate)),
+                  },
+              });
+
+              const existingAggregateMap = new Map(
+                  existingAggregates.map(a => [`${a.startDate}-${a.endDate}`, a])
+              );
+
+              const newAggregates = [];
+              for (const aggregate of salesAggregate) {
+                  const key = `${aggregate.startDate}-${aggregate.endDate}`;
+                  const existing = existingAggregateMap.get(key);
+
+                  if (existing) {
+                      Object.assign(existing, {
+                          customerReturns: aggregate.customerReturns ?? existing.customerReturns ?? 0,
+                          orderedRevenueAmount: aggregate.orderedRevenue?.amount ?? existing.orderedRevenueAmount ?? 0,
+                          orderedRevenueCurrency: aggregate.orderedRevenue?.currencyCode ?? existing.orderedRevenueCurrency ?? "USD",
+                          orderedUnits: aggregate.orderedUnits ?? existing.orderedUnits ?? 0,
+                          shippedCogsAmount: aggregate.shippedCogs?.amount ?? existing.shippedCogsAmount ?? 0,
+                          shippedCogsCurrency: aggregate.shippedCogs?.currencyCode ?? existing.shippedCogsCurrency ?? "USD",
+                          shippedRevenueAmount: aggregate.shippedRevenue?.amount ?? existing.shippedRevenueAmount ?? 0,
+                          shippedRevenueCurrency: aggregate.shippedRevenue?.currencyCode ?? existing.shippedRevenueCurrency ?? "USD",
+                          shippedUnits: aggregate.shippedUnits ?? existing.shippedUnits ?? 0,
+                      });
+                  } else {
+                      newAggregates.push({
+                          startDate: aggregate.startDate ?? null,
+                          endDate: aggregate.endDate ?? null,
+                          customerReturns: aggregate.customerReturns ?? 0,
+                          orderedRevenueAmount: aggregate.orderedRevenue?.amount ?? 0,
+                          orderedRevenueCurrency: aggregate.orderedRevenue?.currencyCode ?? "USD",
+                          orderedUnits: aggregate.orderedUnits ?? 0,
+                          shippedCogsAmount: aggregate.shippedCogs?.amount ?? 0,
+                          shippedCogsCurrency: aggregate.shippedCogs?.currencyCode ?? "USD",
+                          shippedRevenueAmount: aggregate.shippedRevenue?.amount ?? 0,
+                          shippedRevenueCurrency: aggregate.shippedRevenue?.currencyCode ?? "USD",
+                          shippedUnits: aggregate.shippedUnits ?? 0,
+                      });
+                  }
+              }
+
+              if (newAggregates.length > 0) {
+                  await this.salesAggregateRepository.insert(newAggregates);
+              }
+
+              if (existingAggregates.length > 0) {
+                  await this.salesAggregateRepository.save(existingAggregates);
+              }
           }
-        }
       }
-  
-     
-      
+
+ 
       if (salesByAsin.length > 0) {
-        const existingAsinRecords = await this.salesByAsinRepository.find({
-          where: {
-            asin: In(salesByAsin.map((a) => a.asin)),
-            startDate: In(salesByAsin.map((a) => a.startDate)),
-          },
-        });
-  
-        const existingAsinMap = new Map(
-          existingAsinRecords.map((record) => [`${record.asin}-${record.startDate}`, record])
-        );
-  
-        for (const asinData of salesByAsin) {
-          if (!asinData.asin) continue;
-          const key = `${asinData.asin}-${asinData.startDate}`;
-          const existing = existingAsinMap.get(key);
-  
-          if (existing) {
-      
-            
-            Object.assign(existing, {
-              startDate: asinData.startDate ?? existing.startDate,
-              endDate: asinData.endDate ?? existing.endDate,
-              customerReturns: asinData.customerReturns ?? existing.customerReturns ?? 0,
-              orderedRevenueAmount: asinData.orderedRevenue?.amount ?? existing.orderedRevenueAmount ?? 0,
-              orderedRevenueCurrency: asinData.orderedRevenue?.currencyCode ?? existing.orderedRevenueCurrency ?? "USD",
-              orderedUnits: asinData.orderedUnits ?? existing.orderedUnits ?? 0,
-              shippedCogsAmount: asinData.shippedCogs?.amount ?? existing.shippedCogsAmount ?? 0,
-              shippedCogsCurrency: asinData.shippedCogs?.currencyCode ?? existing.shippedCogsCurrency ?? "USD",
-              shippedRevenueAmount: asinData.shippedRevenue?.amount ?? existing.shippedRevenueAmount ?? 0,
-              shippedRevenueCurrency: asinData.shippedRevenue?.currencyCode ?? existing.shippedRevenueCurrency ?? "USD",
-              shippedUnits: asinData.shippedUnits ?? existing.shippedUnits ?? 0,
-            });
-            await this.salesByAsinRepository.save(existing);
-          } else {
-          
-            
-            const newAsinRecord = Object.assign(new AmazonSalesByAsin(), {
-              asin: asinData.asin ?? null,
-              startDate: asinData.startDate ?? null,
-              endDate: asinData.endDate ?? null,
-              customerReturns: asinData.customerReturns ?? 0,
-              orderedRevenueAmount: asinData.orderedRevenue?.amount ?? 0,
-              orderedRevenueCurrency: asinData.orderedRevenue?.currencyCode ?? "USD",
-              orderedUnits: asinData.orderedUnits ?? 0,
-              shippedCogsAmount: asinData.shippedCogs?.amount ?? 0,
-              shippedCogsCurrency: asinData.shippedCogs?.currencyCode ?? "USD",
-              shippedRevenueAmount: asinData.shippedRevenue?.amount ?? 0,
-              shippedRevenueCurrency: asinData.shippedRevenue?.currencyCode ?? "USD",
-              shippedUnits: asinData.shippedUnits ?? 0,
-            });
-            await this.salesByAsinRepository.save(newAsinRecord);
+          salesByAsin = salesByAsin.filter(a => a.startDate === a.endDate);
+          if (salesByAsin.length > 0) {
+              const existingAsinRecords = await this.salesByAsinRepository.find({
+                  where: {
+                      asin: In(salesByAsin.map(a => a.asin)),
+                      startDate: In(salesByAsin.map(a => a.startDate)),
+                  },
+              });
+
+              const existingAsinMap = new Map(
+                  existingAsinRecords.map(record => [`${record.asin}-${record.startDate}`, record])
+              );
+
+              const newAsinRecords = [];
+              for (const asinData of salesByAsin) {
+                  if (!asinData.asin) continue;
+                  const key = `${asinData.asin}-${asinData.startDate}`;
+                  const existing = existingAsinMap.get(key);
+
+                  if (existing) {
+                      Object.assign(existing, {
+                          customerReturns: asinData.customerReturns ?? existing.customerReturns ?? 0,
+                          orderedRevenueAmount: asinData.orderedRevenue?.amount ?? existing.orderedRevenueAmount ?? 0,
+                          orderedRevenueCurrency: asinData.orderedRevenue?.currencyCode ?? existing.orderedRevenueCurrency ?? "USD",
+                          orderedUnits: asinData.orderedUnits ?? existing.orderedUnits ?? 0,
+                          shippedCogsAmount: asinData.shippedCogs?.amount ?? existing.shippedCogsAmount ?? 0,
+                          shippedCogsCurrency: asinData.shippedCogs?.currencyCode ?? existing.shippedCogsCurrency ?? "USD",
+                          shippedRevenueAmount: asinData.shippedRevenue?.amount ?? existing.shippedRevenueAmount ?? 0,
+                          shippedRevenueCurrency: asinData.shippedRevenue?.currencyCode ?? existing.shippedRevenueCurrency ?? "USD",
+                          shippedUnits: asinData.shippedUnits ?? existing.shippedUnits ?? 0,
+                      });
+                  } else {
+                      newAsinRecords.push({
+                          asin: asinData.asin ?? null,
+                          startDate: asinData.startDate ?? null,
+                          endDate: asinData.endDate ?? null,
+                          customerReturns: asinData.customerReturns ?? 0,
+                          orderedRevenueAmount: asinData.orderedRevenue?.amount ?? 0,
+                          orderedRevenueCurrency: asinData.orderedRevenue?.currencyCode ?? "USD",
+                          orderedUnits: asinData.orderedUnits ?? 0,
+                          shippedCogsAmount: asinData.shippedCogs?.amount ?? 0,
+                          shippedCogsCurrency: asinData.shippedCogs?.currencyCode ?? "USD",
+                          shippedRevenueAmount: asinData.shippedRevenue?.amount ?? 0,
+                          shippedRevenueCurrency: asinData.shippedRevenue?.currencyCode ?? "USD",
+                          shippedUnits: asinData.shippedUnits ?? 0,
+                      });
+                  }
+              }
+
+              if (newAsinRecords.length > 0) {
+                  await this.salesByAsinRepository.insert(newAsinRecords);
+              }
+
+              if (existingAsinRecords.length > 0) {
+                  await this.salesByAsinRepository.save(existingAsinRecords);
+              }
           }
-        }
       }
-    } catch (err: any) {
+  } catch (err: any) {
       if (err.code === "23505") {
-        console.warn(`⚠️ Duplicate entry detected: ${err.detail.match(/\((.*?)\)/)?.[1]}`);
+          console.warn(`Duplicate entry detected: ${err.detail.match(/\((.*?)\)/)?.[1]}`);
       } else {
-        console.warn("⚠️ An unexpected error occurred while processing the sales report.", err);
+          console.warn("An unexpected error occurred while processing the sales report.", err);
       }
-    }
   }
+}
+
+
 
 
   private async delay(ms: number): Promise<void> {

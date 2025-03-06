@@ -13,8 +13,8 @@ export class ReportsScheduler {
 
       const reportTypes = [
         'GET_VENDOR_SALES_REPORT',
-        'GET_VENDOR_FORECAST_REPORT',
-        'GET_VENDOR_INVENTORY_REPORT',
+        // 'GET_VENDOR_FORECAST_REPORT',
+        // 'GET_VENDOR_INVENTORY_REPORT',
       ];
 
       for (const reportType of reportTypes) {

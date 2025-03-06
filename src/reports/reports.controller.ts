@@ -27,8 +27,8 @@ export class ReportsController {
 
       const reportTypes = [
         'GET_VENDOR_SALES_REPORT',
-        'GET_VENDOR_INVENTORY_REPORT',
-        'GET_VENDOR_FORECAST_REPORT',
+        // 'GET_VENDOR_INVENTORY_REPORT',
+        // 'GET_VENDOR_FORECAST_REPORT',
       ];
 
       for (const reportType of reportTypes) {
