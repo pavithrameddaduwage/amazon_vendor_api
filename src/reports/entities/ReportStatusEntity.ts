@@ -1,6 +1,7 @@
-import { Entity, Column, PrimaryGeneratedColumn } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, Unique } from 'typeorm';
 
 @Entity('report_status')
+@Unique(['reportId'])   
 export class ReportStatusEntity {
     @PrimaryGeneratedColumn()
     id: number;
@@ -9,7 +10,7 @@ export class ReportStatusEntity {
     reportType: string;
 
     @Column()
-    reportId: string;   
+    reportId: string;    
 
     @Column({ type: 'timestamp' })
     startDate: Date;

@@ -6,24 +6,51 @@ import { ReportsService } from './reports.service';
 export class ReportsScheduler {
   constructor(private readonly reportsService: ReportsService) {}
 
-  @Cron('0 0 * * 3')   
-  async fetchReports() {
+  @Cron('0 0 * * 3')  
+  async fetchSalesReports() {
     try {
-      console.log('Starting scheduled report fetching...');
+      console.log('Starting scheduled sales report fetching...');
 
-      const reportTypes = [
-        'GET_VENDOR_SALES_REPORT',
-        // 'GET_VENDOR_FORECAST_REPORT',
-        // 'GET_VENDOR_INVENTORY_REPORT',
-      ];
+      const startDate = new Date(new Date().getFullYear(), 0, 1);  
+      const endDate = new Date();  
 
-      for (const reportType of reportTypes) {
-        await this.reportsService.fetchAndStoreReports(reportType, null, null);  
-      }
+      await this.reportsService.fetchAndStoreReports('GET_VENDOR_SALES_REPORT', startDate, endDate);
 
-      console.log('Scheduled report fetching completed.');
+      console.log('Scheduled sales report fetching completed.');
     } catch (error) {
-      console.error('Error in scheduled report fetching:', error.message);
+      console.error('Error in scheduled sales report fetching:', error.message);
+    }
+  }
+
+  @Cron('0 0 * * 0')  
+  async fetchInventoryReports() {
+    try {
+      console.log('Starting scheduled inventory report fetching...');
+
+      const startDate = new Date(new Date().getFullYear(), 0, 1);  
+      const endDate = new Date();  
+
+      await this.reportsService.fetchAndStoreReports('GET_VENDOR_INVENTORY_REPORT', startDate, endDate);
+
+      console.log('Scheduled inventory report fetching completed.');
+    } catch (error) {
+      console.error('Error in scheduled inventory report fetching:', error.message);
+    }
+  }
+
+  @Cron('0 0 * * 5') 
+  async fetchForecastReports() {
+    try {
+      console.log('Starting scheduled forecast report fetching...');
+
+      const startDate = new Date(new Date().getFullYear(), 0, 1);  
+      const endDate = new Date();  
+
+      await this.reportsService.fetchAndStoreReports('GET_FORECAST_REPORT', startDate, endDate);
+
+      console.log('Scheduled forecast report fetching completed.');
+    } catch (error) {
+      console.error('Error in scheduled forecast report fetching:', error.message);
     }
   }
 }
