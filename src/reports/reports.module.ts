@@ -27,6 +27,7 @@ import { ReportStatusEntity } from './entities/ReportStatusEntity';
 import { AmazonSalesAggregateRepository } from './entities/repsitory/amazon-sales-aggregate.repository';
 import { AmazonSalesByAsinRepository } from './entities/repsitory/amazon-sales-by-asin.repository';
 import { ReportStatusRepository } from './entities/repsitory/ReportStatusRepository';
+import { ReportsScheduler } from './reports.scheduler';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { ReportStatusRepository } from './entities/repsitory/ReportStatusReposit
   ],
   providers: [
     ReportsService,
+    ReportsScheduler,
     SalesReportService,
     InventoryReportService,  
     ForecastService, 

@@ -2,16 +2,19 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ReportsService } from './reports/reports.service';
 import { config } from 'dotenv';
+import { ReportsScheduler } from './reports/reports.scheduler';
 
 config();
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  const reportsScheduler = app.get(ReportsScheduler);
   const reportsService = app.get(ReportsService);
 
-  const currentDate = new Date();
-  const startDate = new Date(currentDate.getFullYear(), 2, 1, 0, 0, 0);  
-  const endDate = currentDate;
+  const endDate = new Date(); 
+  const startDate = new Date();
+  startDate.setDate(endDate.getDate() - 7);  
 
   console.log('Start Date:', startDate.toISOString());
   console.log('End Date:', endDate.toISOString());
@@ -19,7 +22,7 @@ async function bootstrap() {
   const reportTypes = [
     'GET_VENDOR_SALES_REPORT',
     'GET_VENDOR_INVENTORY_REPORT',
-    'GET_VENDOR_FORECAST_REPORT',   
+    'GET_VENDOR_FORECAST_REPORT',
   ];
 
   for (const reportType of reportTypes) {

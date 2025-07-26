@@ -2,8 +2,10 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
 import { HttpModule } from '@nestjs/axios';
+ 
 import { ReportsModule } from './reports/reports.module';
 import { AuthModule } from './auth.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
@@ -20,7 +22,8 @@ import { AuthModule } from './auth.module';
       autoLoadEntities: true,
       synchronize: true,
     }),
-    HttpModule, 
+    ScheduleModule.forRoot(),  
+    HttpModule,
     ReportsModule,
     AuthModule,
   ],

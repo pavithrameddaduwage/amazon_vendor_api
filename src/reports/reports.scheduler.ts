@@ -1,56 +1,49 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ReportsService } from './reports.service';
 
+const CRON_SALES = '0 0 * * 3';       
+const CRON_INVENTORY = '0 0 * * 0';   
+const CRON_FORECAST = '0 0 * * 5';    
+
 @Injectable()
-export class ReportsScheduler {
+export class ReportsScheduler implements OnModuleInit {
   constructor(private readonly reportsService: ReportsService) {}
 
-  @Cron('0 0 * * 3')  
+  onModuleInit() {
+    console.log('ReportsScheduler initialized — cron jobs registered.');
+  }
+
+  @Cron(CRON_SALES)
   async fetchSalesReports() {
-    try {
-      console.log('Starting scheduled sales report fetching...');
-
-      const startDate = new Date(new Date().getFullYear(), 0, 1);  
-      const endDate = new Date();  
-
-      await this.reportsService.fetchAndStoreReports('GET_VENDOR_SALES_REPORT', startDate, endDate);
-
-      console.log('Scheduled sales report fetching completed.');
-    } catch (error) {
-      console.error('Error in scheduled sales report fetching:', error.message);
-    }
+    await this.handleScheduledReport('GET_VENDOR_SALES_REPORT', 'sales');
   }
 
-  @Cron('0 0 * * 0')  
+  @Cron(CRON_INVENTORY)
   async fetchInventoryReports() {
-    try {
-      console.log('Starting scheduled inventory report fetching...');
-
-      const startDate = new Date(new Date().getFullYear(), 0, 1);  
-      const endDate = new Date();  
-
-      await this.reportsService.fetchAndStoreReports('GET_VENDOR_INVENTORY_REPORT', startDate, endDate);
-
-      console.log('Scheduled inventory report fetching completed.');
-    } catch (error) {
-      console.error('Error in scheduled inventory report fetching:', error.message);
-    }
+    await this.handleScheduledReport('GET_VENDOR_INVENTORY_REPORT', 'inventory');
   }
 
-  @Cron('0 0 * * 5') 
+  @Cron(CRON_FORECAST)
   async fetchForecastReports() {
+    await this.handleScheduledReport('GET_FORECAST_REPORT', 'forecast');
+  }
+
+  private async handleScheduledReport(reportType: string, label: string) {
     try {
-      console.log('Starting scheduled forecast report fetching...');
+      console.log(`Starting scheduled ${label} report fetching...`);
 
-      const startDate = new Date(new Date().getFullYear(), 0, 1);  
-      const endDate = new Date();  
+      const endDate = new Date(); 
+      const startDate = new Date();
+      startDate.setDate(endDate.getDate() - 7);
 
-      await this.reportsService.fetchAndStoreReports('GET_FORECAST_REPORT', startDate, endDate);
+      console.log(`Fetching ${label} reports from ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
-      console.log('Scheduled forecast report fetching completed.');
+      await this.reportsService.fetchAndStoreReports(reportType, startDate, endDate);
+
+      console.log(`Scheduled ${label} report fetching completed.`);
     } catch (error) {
-      console.error('Error in scheduled forecast report fetching:', error.message);
+      console.error(`Error in scheduled ${label} report fetching:`, error.message);
     }
   }
 }
