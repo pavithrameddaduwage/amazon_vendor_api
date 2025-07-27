@@ -1,3 +1,4 @@
+
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ReportsService } from './reports.service';
@@ -5,6 +6,10 @@ import { ReportsService } from './reports.service';
 const CRON_SALES = '0 0 * * 3';       
 const CRON_INVENTORY = '0 0 * * 0';   
 const CRON_FORECAST = '0 0 * * 5';    
+
+// const CRON_SALES = '*/1 * * * *';      
+// const CRON_INVENTORY = '*/1 * * * *';
+// const CRON_FORECAST = '*/1 * * * *';
 
 @Injectable()
 export class ReportsScheduler implements OnModuleInit {

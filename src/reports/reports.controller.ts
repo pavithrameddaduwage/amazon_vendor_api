@@ -1,4 +1,6 @@
-import { Controller, Get, Query } from '@nestjs/common';
+//reports controller
+
+import { Controller, Get, Query, HttpException, HttpStatus } from '@nestjs/common';
 import { ReportsService } from './reports.service';
 import { ForecastService } from './forecast.service';
 
@@ -15,15 +17,20 @@ export class ReportsController {
     @Query('endDate') endDateParam?: string,
   ) {
     try {
-      const startDate = startDateParam ? new Date(startDateParam) : new Date(new Date().getFullYear(), 0, 1);
-      const endDate = endDateParam ? new Date(endDateParam) : new Date();
+      const now = new Date();
+      const startDate = startDateParam ? new Date(startDateParam) : new Date(now.getFullYear(), 0, 1);
+      const endDate = endDateParam ? new Date(endDateParam) : now;
 
       if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-        throw new Error('Invalid date format provided.');
+        throw new HttpException('Invalid date format provided.', HttpStatus.BAD_REQUEST);
       }
 
-      console.log('Start Date:', startDate.toISOString());
-      console.log('End Date:', endDate.toISOString());
+      if (startDate > endDate) {
+        throw new HttpException('Start date must be before or equal to end date.', HttpStatus.BAD_REQUEST);
+      }
+
+      console.log(`[ReportsController] Start Date: ${startDate.toISOString()}`);
+      console.log(`[ReportsController] End Date: ${endDate.toISOString()}`);
 
       const reportTypes = [
         'GET_VENDOR_SALES_REPORT',
@@ -31,16 +38,27 @@ export class ReportsController {
       ];
 
       for (const reportType of reportTypes) {
+        console.log(`[ReportsController] Processing report: ${reportType}`);
         await this.reportsService.fetchAndStoreReports(reportType, startDate, endDate);
       }
 
-    
+      console.log('[ReportsController] Processing forecast report...');
       await this.forecastService.fetchAndStoreForecasts(startDate, endDate);
 
-      return { message: `Processing all reports from ${startDate.toISOString()} to ${endDate.toISOString()}` };
+      return {
+        message: 'Reports processed successfully.',
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+      };
     } catch (error) {
-      console.error('Error processing reports:', error);
-      return { message: 'Error processing reports', error: error.message };
+      console.error('[ReportsController] Error processing reports:', error.message || error);
+      throw new HttpException(
+        {
+          message: 'Error processing reports',
+          error: error.message || 'Unknown error',
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
     }
   }
 }
