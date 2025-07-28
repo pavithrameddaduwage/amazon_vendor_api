@@ -40,8 +40,8 @@ export class ReportsScheduler implements OnModuleInit {
 
       const endDate = new Date(); 
       const startDate = new Date();
-      startDate.setDate(endDate.getDate() - 7);
-
+      startDate.setDate(endDate.getDate() - 14);
+      
       console.log(`Fetching ${label} reports from ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
       await this.reportsService.fetchAndStoreReports(reportType, startDate, endDate);
