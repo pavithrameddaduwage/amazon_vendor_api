@@ -7,7 +7,7 @@ import { Repository } from "typeorm";
 import { AuthService } from "src/auth.service";
 
 import { AmazonInventoryByAsin } from "./entities/amazon_inventory_by_asin.entity";
-import { AmazonInventoryReport } from "./entities/amazon_inventory_report.entity";
+ 
 import { AmazonVendorInventory } from "./entities/amazon_vendor_inventory.entity";
 import { ReportStatusEntity } from "./entities/ReportStatusEntity";
 
@@ -32,7 +32,7 @@ export class InventoryReportService {
     private readonly authService: AuthService,
     @InjectRepository(ReportStatusEntity)
     private readonly reportStatusRepository: Repository<ReportStatusEntity>,
-    @InjectRepository(AmazonInventoryReport)
+  
     @InjectRepository(AmazonInventoryByAsin)
     private readonly amazonInventoryByAsinRepository: Repository<AmazonInventoryByAsin>,
   ) {}
