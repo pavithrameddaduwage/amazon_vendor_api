@@ -14,8 +14,8 @@ const BASE_URL = 'https://sellingpartnerapi-na.amazon.com';
 
 const POLL_INTERVAL_MS = 30_000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
-const CREATE_REPORT_THROTTLE_MS = 65_000;
-const DOCUMENT_THROTTLE_MS = 120_000;
+const CREATE_REPORT_SPACING_MS = 62_000;
+const DOCUMENT_SPACING_MS = 62_000;
 const MAX_RETRIES = 8;
 const SLOW_ENDPOINT_BACKOFF_MS = 70_000;
 
@@ -159,6 +159,7 @@ export class InventoryService {
 
     const { url: downloadUrl, compressionAlgorithm } = metaResponse.data;
 
+    this.logger.log(`Fetching report file: ${reportDocumentId}`);
     const dataResponse = await firstValueFrom(
       this.httpService.get(downloadUrl, { responseType: 'arraybuffer' }),
     );
@@ -166,6 +167,7 @@ export class InventoryService {
     const raw = compressionAlgorithm === 'GZIP'
       ? zlib.gunzipSync(dataResponse.data)
       : dataResponse.data;
+    this.logger.log(`Unzip complete: ${reportDocumentId}`);
 
     return JSON.parse(raw.toString('utf-8'));
   }
@@ -177,19 +179,18 @@ export class InventoryService {
     this.logger.log('Truncated stale inventory report_status rows');
 
     const days = this.buildDailyWindows(startDate, endDate);
-    this.logger.log(`Requesting ${days.length} daily inventory report(s)`);
+    this.logger.log(`Requesting ${days.length} daily inventory report(s) — Phase 1: creating all reports`);
 
+    // Phase 1: Create all reports up-front, staggered by CREATE_REPORT_SPACING_MS (rate limit: 1 req/min)
+    const reportRecords: Array<{ reportId: string; dayStart: Date; dayEnd: Date }> = [];
     for (let i = 0; i < days.length; i++) {
       const { dayStart, dayEnd } = days[i];
-
+      if (i > 0) {
+        this.logger.log(`Spacing ${CREATE_REPORT_SPACING_MS / 1000}s before next createReport (${i + 1}/${days.length})...`);
+        await this.delay(CREATE_REPORT_SPACING_MS);
+      }
       try {
-        if (i > 0) {
-          this.logger.log(`Throttling ${CREATE_REPORT_THROTTLE_MS / 1000}s before next createReport...`);
-          await this.delay(CREATE_REPORT_THROTTLE_MS);
-        }
-
         const reportId = await this.createReport(dayStart, dayEnd);
-
         await this.reportStatusRepository.save(
           this.reportStatusRepository.create({
             reportId,
@@ -200,47 +201,88 @@ export class InventoryService {
             retryCount: 0,
           }),
         );
-
-        const { reportDocumentId, dataStartTime, dataEndTime, createdTime } = await this.pollUntilDone(reportId);
-
-        await this.reportStatusRepository.update({ reportId }, {
-          reportDocumentId,
-          dataStartTime,
-          dataEndTime,
-          createdTime,
-          status: 'DOWNLOADING',
-        });
-
-        this.logger.log(`Throttling ${DOCUMENT_THROTTLE_MS / 1000}s before document download...`);
-        await this.delay(DOCUMENT_THROTTLE_MS);
-
-        const data = await this.downloadDocument(reportDocumentId);
-        const inventoryData = data.inventoryByAsin ?? (Array.isArray(data) ? data : null);
-
-        if (!inventoryData || inventoryData.length === 0) {
-          this.logger.warn(`No inventory data in document for ${dayStart.toISOString()} — skipping`);
-          await this.reportStatusRepository.update({ reportId }, { status: 'COMPLETED_EMPTY' });
-          continue;
-        }
-
-        await this.processInventoryData(inventoryData);
-        await this.reportStatusRepository.update({ reportId }, { status: 'COMPLETED', errorMessage: null });
-        this.logger.log(`Completed inventory report ${reportId} for ${dayStart.toISOString()}`);
-
+        reportRecords.push({ reportId, dayStart, dayEnd });
       } catch (error: any) {
-        this.logger.error(`Failed inventory day ${dayStart.toISOString()}: ${error.message}`);
-        const existing = await this.reportStatusRepository.findOne({
-          where: { dataStartTime: dayStart, reportType: REPORT_TYPE },
-        });
-        if (existing) {
-          await this.reportStatusRepository.update(existing.id, {
+        this.logger.error(`Phase 1 failed for ${dayStart.toISOString()}: ${error.message}`);
+        await this.reportStatusRepository.save(
+          this.reportStatusRepository.create({
+            reportType: REPORT_TYPE,
+            dataStartTime: dayStart,
+            dataEndTime: dayEnd,
             status: 'FAILED',
             errorMessage: error.message,
-            retryCount: (existing.retryCount ?? 0) + 1,
-          });
-        }
+            retryCount: 0,
+          }),
+        );
       }
     }
+
+    this.logger.log(`Phase 1 complete. ${reportRecords.length} report(s) created. Phase 2: polling all concurrently...`);
+
+    // Phase 2: Poll all reports concurrently until each is DONE
+    type PollResult = {
+      reportId: string;
+      dayStart: Date;
+      dayEnd: Date;
+      reportDocumentId: string;
+      dataStartTime: Date;
+      dataEndTime: Date;
+      createdTime: Date;
+    };
+
+    const pollResults = await Promise.allSettled(
+      reportRecords.map(async ({ reportId, dayStart, dayEnd }) => {
+        const result = await this.pollUntilDone(reportId);
+        await this.reportStatusRepository.update({ reportId }, {
+          reportDocumentId: result.reportDocumentId,
+          dataStartTime: result.dataStartTime,
+          dataEndTime: result.dataEndTime,
+          createdTime: result.createdTime,
+          status: 'DOWNLOADING',
+        });
+        return { reportId, dayStart, dayEnd, ...result } as PollResult;
+      }),
+    );
+
+    const readyToDownload: PollResult[] = [];
+    for (const result of pollResults) {
+      if (result.status === 'fulfilled') {
+        readyToDownload.push(result.value);
+      } else {
+        this.logger.error(`Phase 2 poll failed: ${result.reason?.message}`);
+      }
+    }
+
+    this.logger.log(`Phase 2 complete. ${readyToDownload.length} report(s) ready. Phase 3: downloading concurrently...`);
+
+    // Phase 3: Download and process all documents concurrently, staggered to respect rate limit
+    await Promise.allSettled(
+      readyToDownload.map(async ({ reportId, dayStart, reportDocumentId }, index) => {
+        if (index > 0) {
+          await this.delay(index * DOCUMENT_SPACING_MS);
+        }
+        try {
+          const data = await this.downloadDocument(reportDocumentId);
+          const inventoryData = data.inventoryByAsin ?? (Array.isArray(data) ? data : null);
+
+          if (!inventoryData || inventoryData.length === 0) {
+            this.logger.warn(`No inventory data in document for ${dayStart.toISOString()} — skipping`);
+            await this.reportStatusRepository.update({ reportId }, { status: 'COMPLETED_EMPTY' });
+            return;
+          }
+
+          await this.processInventoryData(inventoryData);
+          await this.reportStatusRepository.update({ reportId }, { status: 'COMPLETED', errorMessage: null });
+          this.logger.log(`Completed inventory report ${reportId} for ${dayStart.toISOString()}`);
+        } catch (error: any) {
+          this.logger.error(`Phase 3 download failed for ${dayStart.toISOString()}: ${error.message}`);
+          await this.reportStatusRepository.update({ reportId }, {
+            status: 'FAILED',
+            errorMessage: error.message,
+          });
+        }
+      }),
+    );
 
     await this.retryUntilAllComplete();
   }
@@ -275,13 +317,13 @@ export class InventoryService {
         return;
       }
 
-      this.logger.warn(`Retry round ${round}: ${failed.length} inventory report(s) still FAILED. Waiting 5 minutes before retrying...`);
+      this.logger.warn(`Retry round ${round}: ${failed.length} failed inventory report(s). Waiting 5 minutes...`);
       await this.delay(5 * 60 * 1000);
 
-      for (const record of failed) {
+      for (let i = 0; i < failed.length; i++) {
+        const record = failed[i];
+        if (i > 0) await this.delay(CREATE_REPORT_SPACING_MS);
         try {
-          await this.delay(CREATE_REPORT_THROTTLE_MS);
-
           const reportId = await this.createReport(record.dataStartTime, record.dataEndTime);
           await this.reportStatusRepository.update(record.id, {
             reportId,
@@ -294,7 +336,7 @@ export class InventoryService {
             reportDocumentId, dataStartTime, dataEndTime, createdTime, status: 'DOWNLOADING',
           });
 
-          await this.delay(DOCUMENT_THROTTLE_MS);
+          await this.delay(DOCUMENT_SPACING_MS);
           const data = await this.downloadDocument(reportDocumentId);
           const inventoryData = data.inventoryByAsin ?? (Array.isArray(data) ? data : null);
 
@@ -356,6 +398,6 @@ export class InventoryService {
     for (let i = 0; i < records.length; i += batchSize) {
       await this.inventoryByAsinRepository.upsert(records.slice(i, i + batchSize), ['asin', 'startDate', 'endDate']);
     }
-    this.logger.log(`Saved ${records.length} inventory records.`);
+    this.logger.log(`Inserted to database: ${records.length} inventory record(s)`);
   }
 }

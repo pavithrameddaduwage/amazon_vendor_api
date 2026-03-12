@@ -1,19 +1,19 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InventoryService } from './inventory.service';
 
 @Injectable()
 export class InventoryScheduler implements OnModuleInit {
+  private readonly logger = new Logger(InventoryScheduler.name);
+
   constructor(private readonly inventoryService: InventoryService) {}
 
   onModuleInit() {
-    console.log('InventoryScheduler initialized');
+    this.logger.log('Initialized.');
   }
 
   @Cron('0 0 * * 0', { timeZone: 'America/New_York' })
   async scheduledInventoryFetch() {
-    console.log('[InventoryScheduler] Starting weekly inventory report fetch...');
-
     const endDate = new Date();
     endDate.setHours(23, 59, 59, 999);
 
@@ -21,13 +21,13 @@ export class InventoryScheduler implements OnModuleInit {
     startDate.setDate(startDate.getDate() - 14);
     startDate.setHours(0, 0, 0, 0);
 
-    console.log(`[InventoryScheduler] Window: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+    this.logger.log(`Starting weekly fetch | window: ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
     try {
       await this.inventoryService.fetchAndStoreReports(startDate, endDate);
-      console.log('[InventoryScheduler] Completed successfully.');
+      this.logger.log('Weekly fetch completed successfully.');
     } catch (error) {
-      console.error('[InventoryScheduler] Fatal error:', error.message);
+      this.logger.error(`Weekly fetch fatal error: ${error.message}`);
     }
   }
 }
