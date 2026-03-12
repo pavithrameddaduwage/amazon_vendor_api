@@ -16,8 +16,9 @@ const BASE_URL = 'https://sellingpartnerapi-na.amazon.com';
 const POLL_INTERVAL_MS = 30_000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
 const CREATE_REPORT_THROTTLE_MS = 65_000;
-const DOCUMENT_THROTTLE_MS = 65_000;
+const DOCUMENT_THROTTLE_MS = 120_000;
 const MAX_RETRIES = 8;
+const SLOW_ENDPOINT_BACKOFF_MS = 70_000;
 
 @Injectable()
 export class SalesService {
@@ -56,8 +57,8 @@ export class SalesService {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  private async retryOn429<T>(fn: () => Promise<T>, label: string): Promise<T> {
-    let backoff = 2_000;
+  private async retryOn429<T>(fn: () => Promise<T>, label: string, minBackoff = 2_000): Promise<T> {
+    let backoff = minBackoff;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         return await fn();
@@ -68,7 +69,7 @@ export class SalesService {
           const wait = Math.max(retryAfter, backoff);
           this.logger.warn(`[${label}] 429 rate-limited. Waiting ${wait}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
           await this.delay(wait);
-          backoff = Math.min(backoff * 2, 120_000);
+          backoff = Math.min(backoff * 2, 300_000);
         } else {
           throw err;
         }
@@ -95,6 +96,7 @@ export class SalesService {
     const response = await this.retryOn429(
       () => firstValueFrom(this.httpService.post(`${BASE_URL}/reports/2021-06-30/reports`, body, { headers: this.authHeaders })),
       'createReport',
+      SLOW_ENDPOINT_BACKOFF_MS,
     );
 
     const reportId: string = response.data.reportId;
@@ -146,6 +148,7 @@ export class SalesService {
     const metaResponse = await this.retryOn429(
       () => firstValueFrom(this.httpService.get(`${BASE_URL}/reports/2021-06-30/documents/${reportDocumentId}`, { headers: this.authHeaders })),
       'getReportDocument',
+      SLOW_ENDPOINT_BACKOFF_MS,
     );
 
     const { url: downloadUrl, compressionAlgorithm } = metaResponse.data;
