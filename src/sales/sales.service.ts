@@ -297,10 +297,17 @@ export class SalesService {
   }
 
   async processSalesData(data: any): Promise<void> {
-    if (!data || typeof data !== 'object') return;
+    if (!data || typeof data !== 'object') {
+      this.logger.warn('processSalesData: received empty or invalid data');
+      return;
+    }
 
-    const aggregates = (data.salesAggregate ?? []).filter((a: any) => a.startDate === a.endDate);
-    const asins = (data.salesByAsin ?? []).filter((a: any) => a.startDate === a.endDate);
+    this.logger.log(`processSalesData: top-level keys = [${Object.keys(data).join(', ')}]`);
+
+    const aggregates = data.salesAggregate ?? [];
+    const asins = data.salesByAsin ?? [];
+
+    this.logger.log(`processSalesData: ${aggregates.length} aggregate row(s), ${asins.length} ASIN row(s)`);
 
     if (aggregates.length > 0) {
       const mapped = aggregates.map(a => ({
@@ -318,6 +325,8 @@ export class SalesService {
       }));
       await this.salesAggregateRepository.upsert(mapped, ['startDate', 'endDate']);
       this.logger.log(`Upserted ${mapped.length} sales aggregate row(s)`);
+    } else {
+      this.logger.warn('processSalesData: no salesAggregate rows found in document');
     }
 
     if (asins.length > 0) {
@@ -337,6 +346,8 @@ export class SalesService {
       }));
       await this.salesByAsinRepository.upsert(mapped, ['asin', 'startDate', 'endDate']);
       this.logger.log(`Upserted ${mapped.length} sales-by-ASIN row(s)`);
+    } else {
+      this.logger.warn('processSalesData: no salesByAsin rows found in document');
     }
   }
 }
