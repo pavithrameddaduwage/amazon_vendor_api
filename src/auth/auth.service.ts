@@ -24,7 +24,6 @@ export class AuthService {
       }
 
       const expirationTime = new Date().getTime() + response.data.expires_in * 1000;
-      console.log('New Access Token:', response.data.access_token); // Log the token for debugging
       return { access_token: response.data.access_token, expirationTime };
     } catch (error) {
       console.error('Error fetching access token:', error.response ? error.response.data : error.message);

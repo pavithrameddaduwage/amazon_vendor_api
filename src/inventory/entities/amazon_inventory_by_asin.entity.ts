@@ -1,5 +1,4 @@
-import { Entity, PrimaryColumn, Column, ManyToOne } from 'typeorm';
-import { AmazonInventoryReport } from './amazon_inventory_report.entity';
+import { Entity, PrimaryColumn, Column } from 'typeorm';
 
 @Entity('amazon_inventory_by_asin')
 export class AmazonInventoryByAsin {
@@ -11,9 +10,6 @@ export class AmazonInventoryByAsin {
 
   @PrimaryColumn({ name: 'asin' })
   asin: string;
-
-  @ManyToOne(() => AmazonInventoryReport, (report) => report.inventoryByAsins, { onDelete: 'CASCADE' })
-  report: AmazonInventoryReport;
 
   @Column({ type: 'float', nullable: true, name: 'sourceable_product_out_of_stock_rate' })
   sourceableProductOutOfStockRate: number;
