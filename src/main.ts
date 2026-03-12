@@ -8,10 +8,15 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   await app.listen(3000);
+  const endDate = new Date();
+  endDate.setHours(23, 59, 59, 999);
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - 14);
+  startDate.setHours(0, 0, 0, 0);
+
   console.log('Application is running on port 3000');
-  console.log('Endpoints:');
-  console.log('  GET /sales/fetch?startDate=<ISO>&endDate=<ISO>');
-  console.log('  GET /inventory/fetch?startDate=<ISO>&endDate=<ISO>');
+  console.log(`Fetching sales data from ${startDate.toISOString()} to ${endDate.toISOString()}`);
+
 }
 
 bootstrap();

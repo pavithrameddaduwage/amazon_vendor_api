@@ -220,7 +220,7 @@ export class SalesService {
       }
     }
 
-    await this.retryAllFailed();
+    await this.retryUntilAllComplete();
   }
 
   private buildDailyWindows(startDate: Date, endDate: Date): Array<{ dayStart: Date; dayEnd: Date }> {
@@ -254,43 +254,45 @@ export class SalesService {
     }
   }
 
-  private async retryAllFailed(): Promise<void> {
-    const failed = await this.reportStatusRepository.find({ where: { status: 'FAILED', reportType: REPORT_TYPE } });
-    if (!failed.length) return;
+  private async retryUntilAllComplete(): Promise<void> {
+    let round = 1;
 
-    this.logger.warn(`Retrying ${failed.length} failed sales reports...`);
-
-    for (const record of failed) {
-      if ((record.retryCount ?? 0) >= MAX_RETRIES) {
-        this.logger.error(`Report for ${record.dataStartTime?.toISOString()} exceeded max retries — manual intervention required.`);
-        await this.reportStatusRepository.update(record.id, { status: 'PERMANENTLY_FAILED' });
-        continue;
+    while (true) {
+      const failed = await this.reportStatusRepository.find({ where: { status: 'FAILED', reportType: REPORT_TYPE } });
+      if (!failed.length) {
+        this.logger.log('All sales reports completed successfully.');
+        return;
       }
 
-      try {
-        const backoff = Math.min(2_000 * Math.pow(2, record.retryCount ?? 0), 120_000);
-        await this.delay(backoff);
-        await this.delay(CREATE_REPORT_THROTTLE_MS);
+      this.logger.warn(`Retry round ${round}: ${failed.length} sales report(s) still FAILED. Waiting 5 minutes before retrying...`);
+      await this.delay(5 * 60 * 1000);
 
-        const reportId = await this.createReport(record.dataStartTime, record.dataEndTime);
-        await this.reportStatusRepository.update(record.id, { reportId, status: 'IN_PROGRESS', retryCount: (record.retryCount ?? 0) + 1 });
+      for (const record of failed) {
+        try {
+          await this.delay(CREATE_REPORT_THROTTLE_MS);
 
-        const { reportDocumentId, dataStartTime, dataEndTime, createdTime } = await this.pollUntilDone(reportId);
-        await this.reportStatusRepository.update(record.id, { reportDocumentId, dataStartTime, dataEndTime, createdTime, status: 'DOWNLOADING' });
+          const reportId = await this.createReport(record.dataStartTime, record.dataEndTime);
+          await this.reportStatusRepository.update(record.id, { reportId, status: 'IN_PROGRESS', retryCount: (record.retryCount ?? 0) + 1 });
 
-        await this.delay(DOCUMENT_THROTTLE_MS);
-        const data = await this.downloadDocument(reportDocumentId);
-        await this.processSalesData(data);
-        await this.reportStatusRepository.update(record.id, { status: 'COMPLETED', errorMessage: null });
-        this.logger.log(`Retry succeeded for ${record.dataStartTime?.toISOString()}`);
-      } catch (err: any) {
-        this.logger.error(`Retry failed for ${record.dataStartTime?.toISOString()}: ${err.message}`);
-        await this.reportStatusRepository.update(record.id, {
-          status: 'FAILED',
-          errorMessage: err.message,
-          retryCount: (record.retryCount ?? 0) + 1,
-        });
+          const { reportDocumentId, dataStartTime, dataEndTime, createdTime } = await this.pollUntilDone(reportId);
+          await this.reportStatusRepository.update(record.id, { reportDocumentId, dataStartTime, dataEndTime, createdTime, status: 'DOWNLOADING' });
+
+          await this.delay(DOCUMENT_THROTTLE_MS);
+          const data = await this.downloadDocument(reportDocumentId);
+          await this.processSalesData(data);
+          await this.reportStatusRepository.update(record.id, { status: 'COMPLETED', errorMessage: null });
+          this.logger.log(`Retry round ${round}: succeeded for ${record.dataStartTime?.toISOString()}`);
+        } catch (err: any) {
+          this.logger.error(`Retry round ${round}: failed for ${record.dataStartTime?.toISOString()}: ${err.message}`);
+          await this.reportStatusRepository.update(record.id, {
+            status: 'FAILED',
+            errorMessage: err.message,
+            retryCount: (record.retryCount ?? 0) + 1,
+          });
+        }
       }
+
+      round++;
     }
   }
 
