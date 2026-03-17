@@ -172,100 +172,68 @@ export class SalesService {
     await this.reportStatusRepository.delete({ reportType: REPORT_TYPE });
     this.logger.log('Truncated stale sales report_status rows');
 
-    const days = this.buildDailyWindows(startDate, endDate);
-    this.logger.log(`Requesting ${days.length} daily report(s) — Phase 1: creating all reports`);
+    const windows = this.buildDailyWindows(startDate, endDate);
+    this.logger.log(`Processing ${windows.length} daily report(s) concurrently...`);
 
-    // Phase 1: Create all reports up-front, staggered by CREATE_REPORT_SPACING_MS (rate limit: 1 req/min)
-    const reportRecords: Array<{ reportId: string; dayStart: Date; dayEnd: Date }> = [];
-    for (let i = 0; i < days.length; i++) {
-      const { dayStart, dayEnd } = days[i];
-      if (i > 0) {
-        this.logger.log(`Spacing ${CREATE_REPORT_SPACING_MS / 1000}s before next createReport (${i + 1}/${days.length})...`);
-        await this.delay(CREATE_REPORT_SPACING_MS);
-      }
-      try {
-        const reportId = await this.createReport(dayStart, dayEnd);
-        await this.reportStatusRepository.save(
-          this.reportStatusRepository.create({
-            reportId,
-            reportType: REPORT_TYPE,
-            dataStartTime: dayStart,
-            dataEndTime: dayEnd,
-            status: 'IN_PROGRESS',
-            retryCount: 0,
-          }),
-        );
-        reportRecords.push({ reportId, dayStart, dayEnd });
-      } catch (error: any) {
-        this.logger.error(`Phase 1 failed for ${dayStart.toISOString()}: ${error.message}`);
-        await this.reportStatusRepository.save(
-          this.reportStatusRepository.create({
-            reportType: REPORT_TYPE,
-            dataStartTime: dayStart,
-            dataEndTime: dayEnd,
-            status: 'FAILED',
-            errorMessage: error.message,
-            retryCount: 0,
-          }),
-        );
-      }
-    }
-
-    this.logger.log(`Phase 1 complete. ${reportRecords.length} report(s) created. Phase 2: polling all concurrently...`);
-
-    // Phase 2: Poll all reports concurrently until each is DONE
-    type PollResult = {
-      reportId: string;
-      dayStart: Date;
-      dayEnd: Date;
-      reportDocumentId: string;
-      dataStartTime: Date;
-      dataEndTime: Date;
-      createdTime: Date;
-    };
-
-    const pollResults = await Promise.allSettled(
-      reportRecords.map(async ({ reportId, dayStart, dayEnd }) => {
-        const result = await this.pollUntilDone(reportId);
-        await this.reportStatusRepository.update({ reportId }, {
-          reportDocumentId: result.reportDocumentId,
-          dataStartTime: result.dataStartTime,
-          dataEndTime: result.dataEndTime,
-          createdTime: result.createdTime,
-          status: 'DOWNLOADING',
-        });
-        return { reportId, dayStart, dayEnd, ...result } as PollResult;
-      }),
-    );
-
-    const readyToDownload: PollResult[] = [];
-    for (const result of pollResults) {
-      if (result.status === 'fulfilled') {
-        readyToDownload.push(result.value);
-      } else {
-        this.logger.error(`Phase 2 poll failed: ${result.reason?.message}`);
-      }
-    }
-
-    this.logger.log(`Phase 2 complete. ${readyToDownload.length} report(s) ready. Phase 3: downloading concurrently...`);
-
-    // Phase 3: Download and process all documents concurrently, staggered to respect rate limit
     await Promise.allSettled(
-      readyToDownload.map(async ({ reportId, dayStart, reportDocumentId }, index) => {
-        if (index > 0) {
-          await this.delay(index * DOCUMENT_SPACING_MS);
-        }
+      windows.map(async ({ dayStart, dayEnd }) => {
+        let reportId: string | null = null;
         try {
-          const data = await this.downloadDocument(reportDocumentId);
-          await this.processSalesData(data);
-          await this.reportStatusRepository.update({ reportId }, { status: 'COMPLETED', errorMessage: null });
-          this.logger.log(`Completed report ${reportId} for ${dayStart.toISOString()}`);
-        } catch (error: any) {
-          this.logger.error(`Phase 3 download failed for ${dayStart.toISOString()}: ${error.message}`);
+          // 1. Create Report
+          reportId = await this.createReport(dayStart, dayEnd);
+          await this.reportStatusRepository.save(
+            this.reportStatusRepository.create({
+              reportId,
+              reportType: REPORT_TYPE,
+              dataStartTime: dayStart,
+              dataEndTime: dayEnd,
+              status: 'IN_PROGRESS',
+              retryCount: 0,
+            }),
+          );
+
+          // 2. Poll until DONE
+          const pollResult = await this.pollUntilDone(reportId);
           await this.reportStatusRepository.update({ reportId }, {
+            reportDocumentId: pollResult.reportDocumentId,
+            dataStartTime: pollResult.dataStartTime,
+            dataEndTime: pollResult.dataEndTime,
+            createdTime: pollResult.createdTime,
+            status: 'DOWNLOADING',
+          });
+
+          // 3. Download and Process
+          const data = await this.downloadDocument(pollResult.reportDocumentId);
+          await this.processSalesData(data);
+          
+          await this.reportStatusRepository.update({ reportId }, { 
+            status: 'COMPLETED', 
+            errorMessage: null 
+          });
+          this.logger.log(`Successfully completed report ${reportId} for ${dayStart.toISOString()}`);
+
+        } catch (error: any) {
+          this.logger.error(`Failed processing for ${dayStart.toISOString()} (ReportID: ${reportId}): ${error.message}`);
+          
+          const statusUpdate = {
             status: 'FAILED',
             errorMessage: error.message,
-          });
+          };
+
+          if (reportId) {
+            await this.reportStatusRepository.update({ reportId }, statusUpdate);
+          } else {
+            // If failed before reportId was created
+            await this.reportStatusRepository.save(
+              this.reportStatusRepository.create({
+                reportType: REPORT_TYPE,
+                dataStartTime: dayStart,
+                dataEndTime: dayEnd,
+                retryCount: 0,
+                ...statusUpdate
+              }),
+            );
+          }
         }
       }),
     );
