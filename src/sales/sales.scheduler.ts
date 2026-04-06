@@ -23,7 +23,7 @@ export class SalesScheduler implements OnModuleInit {
     });
   }
 
-  @Cron('0 0 * * 2', { timeZone: 'America/New_York' })
+  @Cron('0 0 * * 3', { timeZone: 'America/New_York' })
   async scheduledSalesFetch() {
     const endDate = new Date();
     endDate.setHours(23, 59, 59, 999);

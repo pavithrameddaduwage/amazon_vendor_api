@@ -12,7 +12,7 @@ export class InventoryScheduler implements OnModuleInit {
     this.logger.log('Initialized.');
   }
 
-  @Cron('0 0 * * 0', { timeZone: 'America/New_York' })
+  @Cron('0 0 * * 4', { timeZone: 'America/New_York' })
   async scheduledInventoryFetch() {
     const endDate = new Date();
     endDate.setHours(23, 59, 59, 999);
