@@ -175,81 +175,94 @@ export class InventoryService {
   public async fetchAndStoreReports(startDate: Date, endDate: Date): Promise<void> {
     this.logger.log(`Inventory fetch: ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
-    await this.reportStatusRepository.delete({ reportType: REPORT_TYPE });
-    this.logger.log('Truncated stale inventory report_status rows');
-
     const windows = this.buildDailyWindows(startDate, endDate);
-    this.logger.log(`Processing ${windows.length} daily inventory report(s) concurrently...`);
+    this.logger.log(`Processing ${windows.length} daily inventory report(s) sequentially...`);
 
-    await Promise.allSettled(
-      windows.map(async ({ dayStart, dayEnd }) => {
-        let reportId: string | null = null;
-        try {
-          // 1. Create Report
+    for (const { dayStart, dayEnd } of windows) {
+      const existing = await this.reportStatusRepository.findOne({
+        where: { reportType: REPORT_TYPE, dataStartTime: dayStart, dataEndTime: dayEnd },
+      });
+
+      if (existing?.status === 'COMPLETED' || existing?.status === 'COMPLETED_EMPTY') {
+        this.logger.log(`Inventory report for ${dayStart.toISOString()} already done. Skipping.`);
+        continue;
+      }
+
+      let reportId = existing?.reportId;
+      try {
+        if (!reportId || existing?.status === 'FAILED') {
+          this.logger.log(`Creating new inventory report for ${dayStart.toISOString()}...`);
           reportId = await this.createReport(dayStart, dayEnd);
-          await this.reportStatusRepository.save(
-            this.reportStatusRepository.create({
+          
+          if (existing) {
+            await this.reportStatusRepository.update(existing.id, {
               reportId,
-              reportType: REPORT_TYPE,
-              dataStartTime: dayStart,
-              dataEndTime: dayEnd,
               status: 'IN_PROGRESS',
-              retryCount: 0,
-            }),
-          );
-
-          // 2. Poll until DONE
-          const pollResult = await this.pollUntilDone(reportId);
-          await this.reportStatusRepository.update({ reportId }, {
-            reportDocumentId: pollResult.reportDocumentId,
-            dataStartTime: pollResult.dataStartTime,
-            dataEndTime: pollResult.dataEndTime,
-            createdTime: pollResult.createdTime,
-            status: 'DOWNLOADING',
-          });
-
-          // 3. Download and Process
-          const data = await this.downloadDocument(pollResult.reportDocumentId);
-          const inventoryData = data.inventoryByAsin ?? (Array.isArray(data) ? data : null);
-
-          if (!inventoryData || inventoryData.length === 0) {
-            this.logger.warn(`No inventory data for ${dayStart.toISOString()} — skipping`);
-            await this.reportStatusRepository.update({ reportId }, { status: 'COMPLETED_EMPTY' });
-            return;
+              retryCount: (existing.retryCount ?? 0) + 1,
+              errorMessage: null,
+            });
+          } else {
+            await this.reportStatusRepository.save(
+              this.reportStatusRepository.create({
+                reportId,
+                reportType: REPORT_TYPE,
+                dataStartTime: dayStart,
+                dataEndTime: dayEnd,
+                status: 'IN_PROGRESS',
+              }),
+            );
           }
+          this.logger.log(`Created inventory report ${reportId}. Waiting 62s...`);
+          await this.delay(CREATE_REPORT_SPACING_MS);
+        }
 
+        this.logger.log(`Polling inventory status for ${reportId}...`);
+        const pollResult = await this.pollUntilDone(reportId);
+        
+        await this.reportStatusRepository.update({ reportId }, {
+          reportDocumentId: pollResult.reportDocumentId,
+          createdTime: pollResult.createdTime,
+          status: 'DOWNLOADING',
+        });
+
+        const data = await this.downloadDocument(pollResult.reportDocumentId);
+        const inventoryData = data.inventoryByAsin ?? (Array.isArray(data) ? data : null);
+
+        if (!inventoryData || inventoryData.length === 0) {
+          this.logger.warn(`No inventory data for ${dayStart.toISOString()} — skipping`);
+          await this.reportStatusRepository.update({ reportId }, { status: 'COMPLETED_EMPTY' });
+        } else {
           await this.processInventoryData(inventoryData);
           await this.reportStatusRepository.update({ reportId }, { 
             status: 'COMPLETED', 
             errorMessage: null 
           });
           this.logger.log(`Successfully completed inventory report ${reportId} for ${dayStart.toISOString()}`);
-
-        } catch (error: any) {
-          this.logger.error(`Failed inventory processing for ${dayStart.toISOString()} (ReportID: ${reportId}): ${error.message}`);
-          
-          const statusUpdate = {
-            status: 'FAILED',
-            errorMessage: error.message,
-          };
-
-          if (reportId) {
-            await this.reportStatusRepository.update({ reportId }, statusUpdate);
-          } else {
-            // If failed before reportId was created
-            await this.reportStatusRepository.save(
-              this.reportStatusRepository.create({
-                reportType: REPORT_TYPE,
-                dataStartTime: dayStart,
-                dataEndTime: dayEnd,
-                retryCount: 0,
-                ...statusUpdate
-              }),
-            );
-          }
         }
-      }),
-    );
+
+      } catch (error: any) {
+        const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+        this.logger.error(`Failed inventory processing for ${dayStart.toISOString()} (ReportID: ${reportId}): ${errorMsg}`);
+        
+        const statusUpdate = {
+          status: 'FAILED',
+          errorMessage: errorMsg,
+        };
+
+        if (reportId) {
+          await this.reportStatusRepository.update({ reportId }, statusUpdate);
+        } else {
+          await this.reportStatusRepository.save(
+            this.reportStatusRepository.create({
+              reportType: REPORT_TYPE,
+              dataStartTime: dayStart,
+              dataEndTime: dayEnd,
+              ...statusUpdate
+            }),
+          );
+        }
+      }
+    }
 
     await this.retryUntilAllComplete();
   }
@@ -278,33 +291,36 @@ export class InventoryService {
     while (true) {
       const failed = await this.reportStatusRepository.find({
         where: { status: 'FAILED', reportType: REPORT_TYPE },
+        order: { dataStartTime: 'ASC' }
       });
+
       if (!failed.length) {
         this.logger.log('All inventory reports completed successfully.');
         return;
       }
 
-      this.logger.warn(`Retry round ${round}: ${failed.length} failed inventory report(s). Waiting 5 minutes...`);
-      await this.delay(5 * 60 * 1000);
+      this.logger.warn(`Retry round ${round}: ${failed.length} failed inventory report(s). Waiting 2 minutes...`);
+      await this.delay(2 * 60 * 1000);
 
-      for (let i = 0; i < failed.length; i++) {
-        const record = failed[i];
-        if (i > 0) await this.delay(CREATE_REPORT_SPACING_MS);
+      for (const record of failed) {
         try {
+          this.logger.log(`Retry Round ${round}: creating inventory report for ${record.dataStartTime.toISOString()}...`);
           const reportId = await this.createReport(record.dataStartTime, record.dataEndTime);
           await this.reportStatusRepository.update(record.id, {
             reportId,
             status: 'IN_PROGRESS',
             retryCount: (record.retryCount ?? 0) + 1,
+            errorMessage: null
           });
 
-          const { reportDocumentId, dataStartTime, dataEndTime, createdTime } = await this.pollUntilDone(reportId);
+          const pollResult = await this.pollUntilDone(reportId);
           await this.reportStatusRepository.update(record.id, {
-            reportDocumentId, dataStartTime, dataEndTime, createdTime, status: 'DOWNLOADING',
+            reportDocumentId: pollResult.reportDocumentId,
+            createdTime: pollResult.createdTime,
+            status: 'DOWNLOADING',
           });
 
-          await this.delay(DOCUMENT_SPACING_MS);
-          const data = await this.downloadDocument(reportDocumentId);
+          const data = await this.downloadDocument(pollResult.reportDocumentId);
           const inventoryData = data.inventoryByAsin ?? (Array.isArray(data) ? data : null);
 
           if (inventoryData?.length) {
@@ -313,16 +329,24 @@ export class InventoryService {
 
           await this.reportStatusRepository.update(record.id, { status: 'COMPLETED', errorMessage: null });
           this.logger.log(`Retry round ${round}: succeeded for inventory ${record.dataStartTime?.toISOString()}`);
+          
+          await this.delay(CREATE_REPORT_SPACING_MS);
         } catch (err: any) {
-          this.logger.error(`Retry round ${round}: failed for inventory ${record.dataStartTime?.toISOString()}: ${err.message}`);
+          const errorMsg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+          this.logger.error(`Retry round ${round}: failed for inventory ${record.dataStartTime?.toISOString()}: ${errorMsg}`);
           await this.reportStatusRepository.update(record.id, {
             status: 'FAILED',
-            errorMessage: err.message,
+            errorMessage: errorMsg,
             retryCount: (record.retryCount ?? 0) + 1,
           });
+          await this.delay(CREATE_REPORT_SPACING_MS);
         }
       }
 
+      if (round >= 5) {
+        this.logger.error('Exceeded max retry rounds for inventory fetch. Stopping.');
+        break;
+      }
       round++;
     }
   }
