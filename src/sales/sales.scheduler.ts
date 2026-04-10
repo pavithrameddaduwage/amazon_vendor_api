@@ -14,6 +14,10 @@ export class SalesScheduler implements OnModuleInit {
   }
   @Cron('0 0 * * 3', { timeZone: 'America/New_York' })
   async scheduledSalesFetch() {
+    // 1. Cleanup any historically failed reports first
+    await this.salesService.retryUntilAllComplete();
+
+    // 2. Start the new weekly fetch
     const now = new Date();
 
     // Previous completed Saturday

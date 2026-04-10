@@ -16,8 +16,8 @@ const POLL_INTERVAL_MS = 10_000;
 const POLL_TIMEOUT_MS = 15 * 60 * 1000;
 const CREATE_REPORT_SPACING_MS = 62_000;
 const DOCUMENT_SPACING_MS = 62_000;
-const MAX_RETRIES = 5;
-const SLOW_ENDPOINT_BACKOFF_MS = 5_000;
+const MAX_RETRIES = 6;
+const SLOW_ENDPOINT_BACKOFF_MS = 15_000;
 
 @Injectable()
 export class InventoryService {
@@ -54,22 +54,22 @@ export class InventoryService {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  private async retryOn429<T>(fn: () => Promise<T>, label: string, minBackoff = 2_000): Promise<T> {
+  private async retryOn429<T>(fn: () => Promise<T>, label: string, minBackoff = 5_000): Promise<T> {
     let backoff = minBackoff;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
         return await fn();
       } catch (err: any) {
         const status = err.response?.status;
-        if (status === 429 && attempt < MAX_RETRIES) {
-          const retryAfter = Number(err.response?.headers?.['retry-after'] ?? 0) * 1000;
-          const wait = Math.max(retryAfter, backoff);
-          this.logger.warn(`[${label}] 429 — waiting ${wait}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
-          await this.delay(wait);
-          backoff = Math.min(backoff * 2, 300_000);
-        } else {
+        if (status !== 429 || attempt === MAX_RETRIES - 1) {
           throw err;
         }
+        const retryAfterMs = Number(err.response?.headers?.['retry-after'] ?? 0) * 1000;
+        const jitter = Math.floor(Math.random() * 3_000);
+        const wait = Math.max(retryAfterMs, backoff) + jitter;
+        this.logger.warn(`[${label}] 429 rate-limited. Waiting ${wait}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+        await this.delay(wait);
+        backoff = Math.min(backoff * 2, 120_000);
       }
     }
     throw new Error(`[${label}] Exceeded max retries`);
@@ -146,13 +146,21 @@ export class InventoryService {
   private async downloadDocument(reportDocumentId: string): Promise<any> {
     await this.ensureAccessToken();
 
+    // Buffer after DONE — avoids hitting the doc endpoint too early
+    this.logger.log(`Waiting 15s before fetching document metadata: ${reportDocumentId}`);
+    await this.delay(15_000);
+
     const metaResponse = await this.retryOn429(
-      () => firstValueFrom(
-        this.httpService.get(
-          `${BASE_URL}/reports/2021-06-30/documents/${reportDocumentId}`,
-          { headers: this.authHeaders },
+      () =>
+        firstValueFrom(
+          this.httpService.get(
+            `${BASE_URL}/reports/2021-06-30/documents/${reportDocumentId}`,
+            {
+              headers: this.authHeaders,
+              params: { enableContentEncodingUrlHeader: true },
+            },
+          ),
         ),
-      ),
       'getReportDocument',
       SLOW_ENDPOINT_BACKOFF_MS,
     );
@@ -175,21 +183,41 @@ export class InventoryService {
   public async fetchAndStoreReports(startDate: Date, endDate: Date): Promise<void> {
     this.logger.log(`Inventory fetch: ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
-    let reportId: string | null = null;
+    const existing = await this.reportStatusRepository.findOne({
+      where: { reportType: REPORT_TYPE, dataStartTime: startDate, dataEndTime: endDate },
+    });
+
+    if (existing?.status === 'COMPLETED' || existing?.status === 'COMPLETED_EMPTY') {
+      this.logger.log(`Inventory report for ${startDate.toISOString()} already done. Skipping new fetch.`);
+      return;
+    }
+
+    let reportId: string | null = existing?.reportId || null;
 
     try {
-      reportId = await this.createReport(startDate, endDate);
+      if (!reportId || existing?.status === 'FAILED') {
+        reportId = await this.createReport(startDate, endDate);
 
-      await this.reportStatusRepository.save(
-        this.reportStatusRepository.create({
-          reportId,
-          reportType: REPORT_TYPE,
-          dataStartTime: startDate,
-          dataEndTime: endDate,
-          status: 'IN_PROGRESS',
-          retryCount: 0,
-        }),
-      );
+        if (existing) {
+          await this.reportStatusRepository.update(existing.id, {
+            reportId,
+            status: 'IN_PROGRESS',
+            retryCount: (existing.retryCount ?? 0) + 1,
+            errorMessage: null,
+          });
+        } else {
+          await this.reportStatusRepository.save(
+            this.reportStatusRepository.create({
+              reportId,
+              reportType: REPORT_TYPE,
+              dataStartTime: startDate,
+              dataEndTime: endDate,
+              status: 'IN_PROGRESS',
+              retryCount: 0,
+            }),
+          );
+        }
+      }
 
       const pollResult = await this.pollUntilDone(reportId);
 
@@ -220,8 +248,7 @@ export class InventoryService {
       }
     } catch (error: any) {
       const message = error instanceof Error ? error.message : String(error);
-
-      this.logger.error(`Inventory report failed (ReportID: ${reportId}): ${message}`);
+      this.logger.error(`Inventory report attempt failed (ReportID: ${reportId}): ${message}`);
 
       if (reportId) {
         await this.reportStatusRepository.update(
@@ -229,24 +256,37 @@ export class InventoryService {
           { status: 'FAILED', errorMessage: message },
         );
       } else {
-        await this.reportStatusRepository.save(
-          this.reportStatusRepository.create({
-            reportType: REPORT_TYPE,
-            dataStartTime: startDate,
-            dataEndTime: endDate,
-            retryCount: 0,
+        // Check if we already have a record for this range
+        const currentRecord = await this.reportStatusRepository.findOne({
+          where: { reportType: REPORT_TYPE, dataStartTime: startDate, dataEndTime: endDate },
+        });
+
+        if (!currentRecord) {
+          await this.reportStatusRepository.save(
+            this.reportStatusRepository.create({
+              reportType: REPORT_TYPE,
+              dataStartTime: startDate,
+              dataEndTime: endDate,
+              retryCount: 0,
+              status: 'FAILED',
+              errorMessage: message,
+            }),
+          );
+        } else {
+          await this.reportStatusRepository.update(currentRecord.id, {
             status: 'FAILED',
             errorMessage: message,
-          }),
-        );
+          });
+        }
       }
-
-      throw error;
     }
+
+    // After main attempt, retry any failures
+    await this.retryUntilAllComplete();
   }
 
-  private async retryUntilAllComplete(): Promise<void> {
-    const MAX_RETRY_ROUNDS = 2;
+  public async retryUntilAllComplete(): Promise<void> {
+    const MAX_RETRY_ROUNDS = 3;
 
     for (let round = 1; round <= MAX_RETRY_ROUNDS; round++) {
       const failed = await this.reportStatusRepository.find({

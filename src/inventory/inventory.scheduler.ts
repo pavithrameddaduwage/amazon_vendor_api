@@ -9,12 +9,15 @@ export class InventoryScheduler implements OnModuleInit {
   constructor(private readonly inventoryService: InventoryService) {}
 
   onModuleInit() {
-    this.logger.log('Initialized — triggering initial fetch...');
-    this.scheduledInventoryFetch();
+    this.logger.log('Initialized.');
   }
 
   @Cron('0 0 * * 3', { timeZone: 'America/New_York' })
   async scheduledInventoryFetch() {
+    // 1. Cleanup any historically failed reports first
+    await this.inventoryService.retryUntilAllComplete();
+
+    // 2. Start the new weekly fetch
     const now = new Date();
 
     // Previous completed Saturday
