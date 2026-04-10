@@ -13,12 +13,12 @@ const REPORT_TYPE = 'GET_VENDOR_SALES_REPORT';
 const MARKETPLACE_ID = 'ATVPDKIKX0DER';
 const BASE_URL = 'https://sellingpartnerapi-na.amazon.com';
 
-const POLL_INTERVAL_MS = 30_000;
-const POLL_TIMEOUT_MS = 30 * 60 * 1000;
+const POLL_INTERVAL_MS = 10_000;
+const POLL_TIMEOUT_MS = 15 * 60 * 1000;
 const CREATE_REPORT_SPACING_MS = 62_000;
 const DOCUMENT_SPACING_MS = 62_000;
-const MAX_RETRIES = 8;
-const SLOW_ENDPOINT_BACKOFF_MS = 70_000;
+const MAX_RETRIES = 5;
+const SLOW_ENDPOINT_BACKOFF_MS = 5_000;
 
 @Injectable()
 export class SalesService {
@@ -169,123 +169,77 @@ export class SalesService {
   public async fetchAndStoreReports(startDate: Date, endDate: Date): Promise<void> {
     this.logger.log(`Sales fetch: ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
-    const windows = this.buildDailyWindows(startDate, endDate);
-    this.logger.log(`Processing ${windows.length} daily report(s) sequentially...`);
+    let reportId: string | null = null;
 
-    for (const { dayStart, dayEnd } of windows) {
-      const existing = await this.reportStatusRepository.findOne({
-        where: { reportType: REPORT_TYPE, dataStartTime: dayStart, dataEndTime: dayEnd },
-      });
+    try {
+      reportId = await this.createReport(startDate, endDate);
 
-      if (existing?.status === 'COMPLETED') {
-        this.logger.log(`Report for ${dayStart.toISOString()} already COMPLETED. Skipping.`);
-        continue;
-      }
+      await this.reportStatusRepository.save(
+        this.reportStatusRepository.create({
+          reportId,
+          reportType: REPORT_TYPE,
+          dataStartTime: startDate,
+          dataEndTime: endDate,
+          status: 'IN_PROGRESS',
+          retryCount: 0,
+        }),
+      );
 
-      let reportId = existing?.reportId;
-      try {
-        if (!reportId || existing?.status === 'FAILED') {
-          // Add a spacing delay if this isn't the first report we're creating in this run
-          // to comply with SP-API's 1-request-per-minute limit for report creation.
-          this.logger.log(`Creating new report for ${dayStart.toISOString()}...`);
-          reportId = await this.createReport(dayStart, dayEnd);
-          
-          if (existing) {
-            await this.reportStatusRepository.update(existing.id, {
-              reportId,
-              status: 'IN_PROGRESS',
-              retryCount: (existing.retryCount ?? 0) + 1,
-              errorMessage: null,
-            });
-          } else {
-            await this.reportStatusRepository.save(
-              this.reportStatusRepository.create({
-                reportId,
-                reportType: REPORT_TYPE,
-                dataStartTime: dayStart,
-                dataEndTime: dayEnd,
-                status: 'IN_PROGRESS',
-              }),
-            );
-          }
-          // Mandatory delay after successful report creation to avoid hitting rate limits on the next one
-          this.logger.log(`Created report ${reportId}. Waiting 62s before next possible creation...`);
-          await this.delay(CREATE_REPORT_SPACING_MS);
-        }
+      const pollResult = await this.pollUntilDone(reportId);
 
-        this.logger.log(`Polling status for report ${reportId} (${dayStart.toISOString()})...`);
-        const pollResult = await this.pollUntilDone(reportId);
-        
-        await this.reportStatusRepository.update({ reportId }, {
+      await this.reportStatusRepository.update(
+        { reportId },
+        {
           reportDocumentId: pollResult.reportDocumentId,
+          dataStartTime: pollResult.dataStartTime,
+          dataEndTime: pollResult.dataEndTime,
           createdTime: pollResult.createdTime,
           status: 'DOWNLOADING',
-        });
+        },
+      );
 
-        this.logger.log(`Downloading document ${pollResult.reportDocumentId}...`);
-        const data = await this.downloadDocument(pollResult.reportDocumentId);
-        
-        this.logger.log(`Processing data for ${dayStart.toISOString()}...`);
-        await this.processSalesData(data);
-        
-        await this.reportStatusRepository.update({ reportId }, { 
-          status: 'COMPLETED', 
-          errorMessage: null 
-        });
-        this.logger.log(`Successfully completed report ${reportId} for ${dayStart.toISOString()}`);
+      const data = await this.downloadDocument(pollResult.reportDocumentId);
+      await this.processSalesData(data);
 
-      } catch (error: any) {
-        const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
-        this.logger.error(`Failed processing for ${dayStart.toISOString()} (ReportID: ${reportId}): ${errorMsg}`);
-        
-        const statusUpdate = {
-          status: 'FAILED',
-          errorMessage: errorMsg,
-        };
+      await this.reportStatusRepository.update(
+        { reportId },
+        { status: 'COMPLETED', errorMessage: null },
+      );
 
-        if (reportId) {
-          await this.reportStatusRepository.update({ reportId }, statusUpdate);
-        } else {
-          await this.reportStatusRepository.save(
-            this.reportStatusRepository.create({
-              reportType: REPORT_TYPE,
-              dataStartTime: dayStart,
-              dataEndTime: dayEnd,
-              ...statusUpdate
-            }),
-          );
-        }
+      this.logger.log(`Successfully completed weekly report ${reportId}`);
+    } catch (error: any) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      this.logger.error(`Weekly report failed (ReportID: ${reportId}): ${message}`);
+
+      if (reportId) {
+        await this.reportStatusRepository.update(
+          { reportId },
+          { status: 'FAILED', errorMessage: message },
+        );
+      } else {
+        await this.reportStatusRepository.save(
+          this.reportStatusRepository.create({
+            reportType: REPORT_TYPE,
+            dataStartTime: startDate,
+            dataEndTime: endDate,
+            retryCount: 0,
+            status: 'FAILED',
+            errorMessage: message,
+          }),
+        );
       }
+
+      throw error;
     }
-
-    await this.retryUntilAllComplete();
-  }
-
-  private buildDailyWindows(startDate: Date, endDate: Date): Array<{ dayStart: Date; dayEnd: Date }> {
-    const windows: Array<{ dayStart: Date; dayEnd: Date }> = [];
-    const current = new Date(startDate);
-    current.setUTCHours(0, 0, 0, 0);
-    const end = new Date(endDate);
-    end.setUTCHours(23, 59, 59, 999);
-
-    while (current <= end) {
-      const dayStart = new Date(current);
-      dayStart.setUTCHours(0, 0, 0, 0);
-      const dayEnd = new Date(current);
-      dayEnd.setUTCHours(23, 59, 59, 999);
-      windows.push({ dayStart, dayEnd });
-      current.setUTCDate(current.getUTCDate() + 1);
-    }
-    return windows;
   }
 
   private async retryUntilAllComplete(): Promise<void> {
-    let round = 1;
+    const MAX_RETRY_ROUNDS = 2;
 
-    while (true) {
-      const failed = await this.reportStatusRepository.find({ 
+    for (let round = 1; round <= MAX_RETRY_ROUNDS; round++) {
+      const failed = await this.reportStatusRepository.find({
         where: { status: 'FAILED', reportType: REPORT_TYPE },
-        order: { dataStartTime: 'ASC' }
       });
 
       if (!failed.length) {
@@ -293,54 +247,47 @@ export class SalesService {
         return;
       }
 
-      // If we have many failures, don't just hammer the API
-      this.logger.warn(`Retry round ${round}: ${failed.length} failed report(s). Waiting 2 minutes...`);
-      await this.delay(2 * 60 * 1000);
+      this.logger.warn(`Retry round ${round}: ${failed.length} failed report(s). Waiting 1 minute...`);
+      await this.delay(60_000);
 
       for (const record of failed) {
         try {
-          this.logger.log(`Retry: creating report for ${record.dataStartTime.toISOString()}...`);
           const reportId = await this.createReport(record.dataStartTime, record.dataEndTime);
-          await this.reportStatusRepository.update(record.id, { 
-            reportId, 
-            status: 'IN_PROGRESS', 
+
+          await this.reportStatusRepository.update(record.id, {
+            reportId,
+            status: 'IN_PROGRESS',
             retryCount: (record.retryCount ?? 0) + 1,
-            errorMessage: null
           });
 
           const pollResult = await this.pollUntilDone(reportId);
-          await this.reportStatusRepository.update(record.id, { 
-            reportDocumentId: pollResult.reportDocumentId, 
-            createdTime: pollResult.createdTime, 
-            status: 'DOWNLOADING' 
+
+          await this.reportStatusRepository.update(record.id, {
+            reportDocumentId: pollResult.reportDocumentId,
+            dataStartTime: pollResult.dataStartTime,
+            dataEndTime: pollResult.dataEndTime,
+            createdTime: pollResult.createdTime,
+            status: 'DOWNLOADING',
           });
 
           const data = await this.downloadDocument(pollResult.reportDocumentId);
           await this.processSalesData(data);
-          await this.reportStatusRepository.update(record.id, { status: 'COMPLETED', errorMessage: null });
-          this.logger.log(`Retry round ${round}: succeeded for ${record.dataStartTime?.toISOString()}`);
-          
-          // Space out retry creations too
-          await this.delay(CREATE_REPORT_SPACING_MS);
+
+          await this.reportStatusRepository.update(record.id, {
+            status: 'COMPLETED',
+            errorMessage: null,
+          });
         } catch (err: any) {
-          const errorMsg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-          this.logger.error(`Retry round ${round}: failed for ${record.dataStartTime?.toISOString()}: ${errorMsg}`);
           await this.reportStatusRepository.update(record.id, {
             status: 'FAILED',
-            errorMessage: errorMsg,
+            errorMessage: err.message,
             retryCount: (record.retryCount ?? 0) + 1,
           });
-          // Even on failure, wait before next creation
-          await this.delay(CREATE_REPORT_SPACING_MS);
         }
       }
-
-      if (round >= 5) {
-        this.logger.error('Exceeded max retry rounds for sales fetch. Stopping.');
-        break;
-      }
-      round++;
     }
+
+    this.logger.warn('Some reports still failed after max retry rounds.');
   }
 
   async processSalesData(data: any): Promise<void> {
