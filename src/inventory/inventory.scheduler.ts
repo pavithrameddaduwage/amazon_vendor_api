@@ -12,24 +12,21 @@ export class InventoryScheduler implements OnModuleInit {
     this.logger.log('Initialized.');
   }
 
-  @Cron('0 0 * * 3', { timeZone: 'America/New_York' })
+  @Cron('0 0 * * 5', { timeZone: 'America/New_York' }) // Friday midnight ET
   async scheduledInventoryFetch() {
     // 1. Cleanup any historically failed reports first
     await this.inventoryService.retryUntilAllComplete();
 
     // 2. Start the new weekly fetch
+    // Runs on Friday — previous Saturday is always 6 days back
     const now = new Date();
 
-    // Previous completed Saturday
     const endDate = new Date(now);
-    const day = endDate.getDay(); // 0=Sun, 1=Mon, 2=Tue, 3=Wed, ...
-    const daysBackToPreviousSaturday = day + 4; // Wed->4, Thu->5, Fri->6, Sat->7, Sun->8, Mon->9, Tue->10
-    endDate.setDate(endDate.getDate() - daysBackToPreviousSaturday);
+    endDate.setDate(endDate.getDate() - 6); // Friday - 6 = last Saturday
     endDate.setHours(23, 59, 59, 999);
 
-    // Corresponding Sunday
     const startDate = new Date(endDate);
-    startDate.setDate(startDate.getDate() - 6);
+    startDate.setDate(startDate.getDate() - 6); // Saturday - 6 = last Sunday
     startDate.setHours(0, 0, 0, 0);
 
     this.logger.log(
