@@ -12,7 +12,7 @@ export class InventoryScheduler implements OnModuleInit {
     this.logger.log('Initialized.');
   }
 
-  @Cron('0 0 * * 5', { timeZone: 'America/New_York' }) // Friday midnight ET
+  // @Cron('0 0 * * 5', { timeZone: 'America/New_York' }) // Friday midnight ET — DISABLED
   async scheduledInventoryFetch() {
     // 1. Cleanup any historically failed reports first
     await this.inventoryService.retryUntilAllComplete();

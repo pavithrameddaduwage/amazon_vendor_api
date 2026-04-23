@@ -16,9 +16,10 @@ const BASE_URL = 'https://sellingpartnerapi-na.amazon.com';
 const POLL_INTERVAL_INITIAL_MS = 5_000;   // start polling quickly
 const POLL_INTERVAL_MAX_MS    = 30_000;  // cap poll backoff at 30s
 const POLL_TIMEOUT_MS = 15 * 60 * 1000;
-const DOCUMENT_WAIT_MS = 5_000;          // reduced from 15s — most docs ready quickly
-const MAX_RETRIES = 6;
-const SLOW_ENDPOINT_BACKOFF_MS = 15_000;
+const DOCUMENT_WAIT_MS = 10_000;         // wait before fetching document metadata
+const MAX_RETRIES = 10;                  // more retries for throttled endpoints
+const SLOW_ENDPOINT_BACKOFF_MS = 30_000; // base backoff for slow endpoints
+const DOCUMENT_ENDPOINT_BACKOFF_MS = 60_000; // document endpoint is most throttled
 
 @Injectable()
 export class SalesService {
@@ -164,7 +165,7 @@ export class SalesService {
           ),
         ),
       'getReportDocument',
-      SLOW_ENDPOINT_BACKOFF_MS,
+      DOCUMENT_ENDPOINT_BACKOFF_MS, // use longer backoff — this endpoint throttles heavily
     );
 
     const { url: downloadUrl, compressionAlgorithm } = metaResponse.data;
