@@ -12,12 +12,12 @@ const REPORT_TYPE = 'GET_VENDOR_INVENTORY_REPORT';
 const MARKETPLACE_ID = 'ATVPDKIKX0DER';
 const BASE_URL = 'https://sellingpartnerapi-na.amazon.com';
 
-const POLL_INTERVAL_INITIAL_MS = 5_000;   // start polling quickly
-const POLL_INTERVAL_MAX_MS    = 30_000;  // cap poll backoff at 30s
-const POLL_TIMEOUT_MS = 15 * 60 * 1000;
-const DOCUMENT_WAIT_MS = 5_000;          // reduced from 15s — most docs ready quickly
-const MAX_RETRIES = 6;
-const SLOW_ENDPOINT_BACKOFF_MS = 15_000;
+const POLL_INTERVAL_INITIAL_MS = 30_000;  // Start polling slower
+const POLL_INTERVAL_MAX_MS    = 60_000;  // Cap poll backoff at 60s
+const POLL_TIMEOUT_MS = 30 * 60 * 1000;
+const DOCUMENT_WAIT_MS = 20_000;         // Wait longer
+const MAX_RETRIES = 10;
+const SLOW_ENDPOINT_BACKOFF_MS = 60_000;
 
 @Injectable()
 export class InventoryService {
@@ -186,104 +186,71 @@ export class InventoryService {
   public async fetchAndStoreReports(startDate: Date, endDate: Date): Promise<void> {
     this.logger.log(`Inventory fetch: ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
-    const existing = await this.reportStatusRepository.findOne({
+    let record = await this.reportStatusRepository.findOne({
       where: { reportType: REPORT_TYPE, dataStartTime: startDate, dataEndTime: endDate },
     });
 
-    if (existing?.status === 'COMPLETED' || existing?.status === 'COMPLETED_EMPTY') {
-      this.logger.log(`Inventory report for ${startDate.toISOString()} already done. Skipping new fetch.`);
+    if (record?.status === 'COMPLETED' || record?.status === 'COMPLETED_EMPTY') {
+      this.logger.log(`Inventory report for ${startDate.toISOString()} already done. Skipping.`);
       return;
     }
 
-    let reportId: string | null = existing?.reportId || null;
+    // Create record if it doesn't exist
+    if (!record) {
+      record = await this.reportStatusRepository.save(
+        this.reportStatusRepository.create({
+          reportType: REPORT_TYPE,
+          dataStartTime: startDate,
+          dataEndTime: endDate,
+          status: 'PENDING',
+          retryCount: 0,
+        }),
+      );
+    }
+
+    let reportId: string | null = record.reportId || null;
 
     try {
-      if (!reportId || existing?.status === 'FAILED') {
+      if (!reportId || record.status === 'FAILED') {
         reportId = await this.createReport(startDate, endDate);
-
-        if (existing) {
-          await this.reportStatusRepository.update(existing.id, {
-            reportId,
-            status: 'IN_PROGRESS',
-            retryCount: (existing.retryCount ?? 0) + 1,
-            errorMessage: null,
-          });
-        } else {
-          await this.reportStatusRepository.save(
-            this.reportStatusRepository.create({
-              reportId,
-              reportType: REPORT_TYPE,
-              dataStartTime: startDate,
-              dataEndTime: endDate,
-              status: 'IN_PROGRESS',
-              retryCount: 0,
-            }),
-          );
-        }
+        await this.reportStatusRepository.update(record.id, {
+          reportId,
+          status: 'IN_PROGRESS',
+          retryCount: record.retryCount + 1,
+          errorMessage: null,
+        });
       }
 
       const pollResult = await this.pollUntilDone(reportId);
 
-      await this.reportStatusRepository.update(
-        { reportId },
-        {
-          reportDocumentId: pollResult.reportDocumentId,
-          dataStartTime: pollResult.dataStartTime,
-          dataEndTime: pollResult.dataEndTime,
-          createdTime: pollResult.createdTime,
-          status: 'DOWNLOADING',
-        },
-      );
+      await this.reportStatusRepository.update(record.id, {
+        reportDocumentId: pollResult.reportDocumentId,
+        status: 'DOWNLOADING',
+      });
 
       const data = await this.downloadDocument(pollResult.reportDocumentId);
       const inventoryData = data.inventoryByAsin ?? (Array.isArray(data) ? data : null);
 
       if (!inventoryData || inventoryData.length === 0) {
         this.logger.warn(`No inventory data for report ${reportId} — skipping`);
-        await this.reportStatusRepository.update({ reportId }, { status: 'COMPLETED_EMPTY' });
+        await this.reportStatusRepository.update(record.id, { status: 'COMPLETED_EMPTY' });
       } else {
         await this.processInventoryData(inventoryData);
-        await this.reportStatusRepository.update(
-          { reportId },
-          { status: 'COMPLETED', errorMessage: null },
-        );
+        await this.reportStatusRepository.update(record.id, {
+          status: 'COMPLETED',
+          errorMessage: null,
+        });
         this.logger.log(`Successfully completed inventory weekly report ${reportId}`);
       }
     } catch (error: any) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Inventory report attempt failed (ReportID: ${reportId}): ${message}`);
+      this.logger.error(`Inventory report attempt failed: ${message}`);
 
-      if (reportId) {
-        await this.reportStatusRepository.update(
-          { reportId },
-          { status: 'FAILED', errorMessage: message },
-        );
-      } else {
-        // Check if we already have a record for this range
-        const currentRecord = await this.reportStatusRepository.findOne({
-          where: { reportType: REPORT_TYPE, dataStartTime: startDate, dataEndTime: endDate },
-        });
-
-        if (!currentRecord) {
-          await this.reportStatusRepository.save(
-            this.reportStatusRepository.create({
-              reportType: REPORT_TYPE,
-              dataStartTime: startDate,
-              dataEndTime: endDate,
-              retryCount: 0,
-              status: 'FAILED',
-              errorMessage: message,
-            }),
-          );
-        } else {
-          await this.reportStatusRepository.update(currentRecord.id, {
-            status: 'FAILED',
-            errorMessage: message,
-          });
-        }
-      }
+      await this.reportStatusRepository.update(record.id, {
+        status: 'FAILED',
+        errorMessage: message,
+      });
     }
-
   }
 
   public async retryUntilAllComplete(): Promise<void> {
@@ -302,48 +269,56 @@ export class InventoryService {
       this.logger.warn(`Retry round ${round}: ${failed.length} failed report(s). Waiting 60s before retrying...`);
       await this.delay(60_000);
 
-      // Process all failed reports in parallel for this round
-      await Promise.allSettled(
-        failed.map(async (record) => {
-          try {
-            const reportId = await this.createReport(record.dataStartTime, record.dataEndTime);
+      const BATCH_SIZE = 2;
+      for (let i = 0; i < failed.length; i += BATCH_SIZE) {
+        const chunk = failed.slice(i, i + BATCH_SIZE);
+        this.logger.log(`Retrying batch of ${chunk.length} failed reports...`);
 
-            await this.reportStatusRepository.update(record.id, {
-              reportId,
-              status: 'IN_PROGRESS',
-              retryCount: (record.retryCount ?? 0) + 1,
-            });
+        await Promise.allSettled(
+          chunk.map(async (record) => {
+            try {
+              // Small jitter
+              await this.delay(Math.random() * 5000);
 
-            const pollResult = await this.pollUntilDone(reportId);
+              const reportId = await this.createReport(record.dataStartTime, record.dataEndTime);
 
-            await this.reportStatusRepository.update(record.id, {
-              reportDocumentId: pollResult.reportDocumentId,
-              dataStartTime: pollResult.dataStartTime,
-              dataEndTime: pollResult.dataEndTime,
-              createdTime: pollResult.createdTime,
-              status: 'DOWNLOADING',
-            });
+              await this.reportStatusRepository.update(record.id, {
+                reportId,
+                status: 'IN_PROGRESS',
+                retryCount: (record.retryCount ?? 0) + 1,
+              });
 
-            const data = await this.downloadDocument(pollResult.reportDocumentId);
-            const inventoryData = data.inventoryByAsin ?? (Array.isArray(data) ? data : null);
+              const pollResult = await this.pollUntilDone(reportId);
 
-            if (inventoryData?.length) {
-              await this.processInventoryData(inventoryData);
+              await this.reportStatusRepository.update(record.id, {
+                reportDocumentId: pollResult.reportDocumentId,
+                status: 'DOWNLOADING',
+              });
+
+              const data = await this.downloadDocument(pollResult.reportDocumentId);
+              const inventoryData = data.inventoryByAsin ?? (Array.isArray(data) ? data : null);
+
+              if (inventoryData?.length) {
+                await this.processInventoryData(inventoryData);
+              }
+
+              await this.reportStatusRepository.update(record.id, {
+                status: 'COMPLETED',
+                errorMessage: null,
+              });
+            } catch (err: any) {
+              await this.reportStatusRepository.update(record.id, {
+                status: 'FAILED',
+                errorMessage: err.message,
+                retryCount: (record.retryCount ?? 0) + 1,
+              });
             }
-
-            await this.reportStatusRepository.update(record.id, {
-              status: 'COMPLETED',
-              errorMessage: null,
-            });
-          } catch (err: any) {
-            await this.reportStatusRepository.update(record.id, {
-              status: 'FAILED',
-              errorMessage: err.message,
-              retryCount: (record.retryCount ?? 0) + 1,
-            });
-          }
-        }),
-      );
+          }),
+        );
+        if (i + BATCH_SIZE < failed.length) {
+          await this.delay(10_000);
+        }
+      }
     }
 
     this.logger.warn('Some inventory reports still failed after max retry rounds.');

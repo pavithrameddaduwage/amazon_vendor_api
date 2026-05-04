@@ -14,31 +14,28 @@ export class InventoryScheduler implements OnModuleInit {
 
   // @Cron('0 0 * * 5', { timeZone: 'America/New_York' }) // Friday midnight ET — DISABLED
   async scheduledInventoryFetch() {
-    // 1. Cleanup any historically failed reports first
+    // 1. Cleanup any historically failed reports first (chunked)
     await this.inventoryService.retryUntilAllComplete();
 
     // 2. Start the new weekly fetch
-    // Runs on Friday — previous Saturday is always 6 days back
     const now = new Date();
-
     const endDate = new Date(now);
-    endDate.setDate(endDate.getDate() - 6); // Friday - 6 = last Saturday
+    endDate.setDate(endDate.getDate() - 6);
     endDate.setHours(23, 59, 59, 999);
 
     const startDate = new Date(endDate);
-    startDate.setDate(startDate.getDate() - 6); // Saturday - 6 = last Sunday
+    startDate.setDate(startDate.getDate() - 6);
     startDate.setHours(0, 0, 0, 0);
 
     this.logger.log(
-      `Starting weekly fetch | window: ${startDate.toISOString()} to ${endDate.toISOString()}`,
+      `Starting weekly inventory fetch | window: ${startDate.toISOString()} to ${endDate.toISOString()}`,
     );
 
     try {
       await this.inventoryService.fetchAndStoreReports(startDate, endDate);
-      this.logger.log('Weekly fetch completed successfully.');
+      this.logger.log('Weekly inventory fetch finished.');
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Weekly fetch fatal error: ${message}`);
+      this.logger.error(`Weekly inventory fetch fatal error: ${error.message}`);
     }
   }
 }

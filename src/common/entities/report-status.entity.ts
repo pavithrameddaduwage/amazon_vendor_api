@@ -6,7 +6,7 @@ export class ReportStatusEntity {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column()
+  @Column({ nullable: true })
   reportId: string;
 
   @Column({ nullable: true })

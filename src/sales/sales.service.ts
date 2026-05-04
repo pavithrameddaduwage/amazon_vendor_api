@@ -13,13 +13,13 @@ const REPORT_TYPE = 'GET_VENDOR_SALES_REPORT';
 const MARKETPLACE_ID = 'ATVPDKIKX0DER';
 const BASE_URL = 'https://sellingpartnerapi-na.amazon.com';
 
-const POLL_INTERVAL_INITIAL_MS = 5_000;   // start polling quickly
-const POLL_INTERVAL_MAX_MS    = 30_000;  // cap poll backoff at 30s
-const POLL_TIMEOUT_MS = 15 * 60 * 1000;
-const DOCUMENT_WAIT_MS = 10_000;         // wait before fetching document metadata
-const MAX_RETRIES = 10;                  // more retries for throttled endpoints
-const SLOW_ENDPOINT_BACKOFF_MS = 30_000; // base backoff for slow endpoints
-const DOCUMENT_ENDPOINT_BACKOFF_MS = 60_000; // document endpoint is most throttled
+const POLL_INTERVAL_INITIAL_MS = 30_000;  // Start polling slower (reports take time)
+const POLL_INTERVAL_MAX_MS    = 60_000;  // Cap poll backoff at 60s
+const POLL_TIMEOUT_MS = 30 * 60 * 1000;  // 30 min timeout
+const DOCUMENT_WAIT_MS = 20_000;         // Wait longer before fetching document
+const MAX_RETRIES = 10;
+const SLOW_ENDPOINT_BACKOFF_MS = 60_000; // Respect Amazon's 1-per-minute limits
+const DOCUMENT_ENDPOINT_BACKOFF_MS = 90_000;
 
 @Injectable()
 export class SalesService {
@@ -186,99 +186,66 @@ export class SalesService {
   public async fetchAndStoreReports(startDate: Date, endDate: Date): Promise<void> {
     this.logger.log(`Sales fetch: ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
-    const existing = await this.reportStatusRepository.findOne({
+    let record = await this.reportStatusRepository.findOne({
       where: { reportType: REPORT_TYPE, dataStartTime: startDate, dataEndTime: endDate },
     });
 
-    if (existing?.status === 'COMPLETED') {
-      this.logger.log(`Sales report for ${startDate.toISOString()} already COMPLETED. Skipping new fetch.`);
+    if (record?.status === 'COMPLETED') {
+      this.logger.log(`Sales report for ${startDate.toISOString()} already COMPLETED. Skipping.`);
       return;
     }
 
-    let reportId: string | null = existing?.reportId || null;
+    // Create record if it doesn't exist
+    if (!record) {
+      record = await this.reportStatusRepository.save(
+        this.reportStatusRepository.create({
+          reportType: REPORT_TYPE,
+          dataStartTime: startDate,
+          dataEndTime: endDate,
+          status: 'PENDING',
+          retryCount: 0,
+        }),
+      );
+    }
+
+    let reportId: string | null = record.reportId || null;
 
     try {
-      if (!reportId || existing?.status === 'FAILED') {
+      if (!reportId || record.status === 'FAILED') {
         reportId = await this.createReport(startDate, endDate);
-
-        if (existing) {
-          await this.reportStatusRepository.update(existing.id, {
-            reportId,
-            status: 'IN_PROGRESS',
-            retryCount: (existing.retryCount ?? 0) + 1,
-            errorMessage: null,
-          });
-        } else {
-          await this.reportStatusRepository.save(
-            this.reportStatusRepository.create({
-              reportId,
-              reportType: REPORT_TYPE,
-              dataStartTime: startDate,
-              dataEndTime: endDate,
-              status: 'IN_PROGRESS',
-              retryCount: 0,
-            }),
-          );
-        }
+        await this.reportStatusRepository.update(record.id, {
+          reportId,
+          status: 'IN_PROGRESS',
+          retryCount: record.retryCount + 1,
+          errorMessage: null,
+        });
       }
 
       const pollResult = await this.pollUntilDone(reportId);
 
-      await this.reportStatusRepository.update(
-        { reportId },
-        {
-          reportDocumentId: pollResult.reportDocumentId,
-          dataStartTime: pollResult.dataStartTime,
-          dataEndTime: pollResult.dataEndTime,
-          createdTime: pollResult.createdTime,
-          status: 'DOWNLOADING',
-        },
-      );
+      await this.reportStatusRepository.update(record.id, {
+        reportDocumentId: pollResult.reportDocumentId,
+        status: 'DOWNLOADING',
+      });
 
       const data = await this.downloadDocument(pollResult.reportDocumentId);
       await this.processSalesData(data);
 
-      await this.reportStatusRepository.update(
-        { reportId },
-        { status: 'COMPLETED', errorMessage: null },
-      );
+      await this.reportStatusRepository.update(record.id, {
+        status: 'COMPLETED',
+        errorMessage: null,
+      });
 
       this.logger.log(`Successfully completed weekly report ${reportId}`);
     } catch (error: any) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Weekly report attempt failed (ReportID: ${reportId}): ${message}`);
+      this.logger.error(`Sales report attempt failed: ${message}`);
 
-      if (reportId) {
-        await this.reportStatusRepository.update(
-          { reportId },
-          { status: 'FAILED', errorMessage: message },
-        );
-      } else {
-        // Only save if we don't already have a record for this range
-        const currentRecord = await this.reportStatusRepository.findOne({
-          where: { reportType: REPORT_TYPE, dataStartTime: startDate, dataEndTime: endDate },
-        });
-
-        if (!currentRecord) {
-          await this.reportStatusRepository.save(
-            this.reportStatusRepository.create({
-              reportType: REPORT_TYPE,
-              dataStartTime: startDate,
-              dataEndTime: endDate,
-              retryCount: 0,
-              status: 'FAILED',
-              errorMessage: message,
-            }),
-          );
-        } else {
-          await this.reportStatusRepository.update(currentRecord.id, {
-            status: 'FAILED',
-            errorMessage: message,
-          });
-        }
-      }
+      await this.reportStatusRepository.update(record.id, {
+        status: 'FAILED',
+        errorMessage: message,
+      });
     }
-
   }
 
   public async retryUntilAllComplete(): Promise<void> {
@@ -297,44 +264,52 @@ export class SalesService {
       this.logger.warn(`Retry round ${round}: ${failed.length} failed report(s). Waiting 60s before retrying...`);
       await this.delay(60_000);
 
-      // Process all failed reports in parallel for this round
-      await Promise.allSettled(
-        failed.map(async (record) => {
-          try {
-            const reportId = await this.createReport(record.dataStartTime, record.dataEndTime);
+      const BATCH_SIZE = 2;
+      for (let i = 0; i < failed.length; i += BATCH_SIZE) {
+        const chunk = failed.slice(i, i + BATCH_SIZE);
+        this.logger.log(`Retrying batch of ${chunk.length} failed reports...`);
 
-            await this.reportStatusRepository.update(record.id, {
-              reportId,
-              status: 'IN_PROGRESS',
-              retryCount: (record.retryCount ?? 0) + 1,
-            });
+        await Promise.allSettled(
+          chunk.map(async (record) => {
+            try {
+              // Small jitter
+              await this.delay(Math.random() * 5000);
+              
+              const reportId = await this.createReport(record.dataStartTime, record.dataEndTime);
 
-            const pollResult = await this.pollUntilDone(reportId);
+              await this.reportStatusRepository.update(record.id, {
+                reportId,
+                status: 'IN_PROGRESS',
+                retryCount: (record.retryCount ?? 0) + 1,
+              });
 
-            await this.reportStatusRepository.update(record.id, {
-              reportDocumentId: pollResult.reportDocumentId,
-              dataStartTime: pollResult.dataStartTime,
-              dataEndTime: pollResult.dataEndTime,
-              createdTime: pollResult.createdTime,
-              status: 'DOWNLOADING',
-            });
+              const pollResult = await this.pollUntilDone(reportId);
 
-            const data = await this.downloadDocument(pollResult.reportDocumentId);
-            await this.processSalesData(data);
+              await this.reportStatusRepository.update(record.id, {
+                reportDocumentId: pollResult.reportDocumentId,
+                status: 'DOWNLOADING',
+              });
 
-            await this.reportStatusRepository.update(record.id, {
-              status: 'COMPLETED',
-              errorMessage: null,
-            });
-          } catch (err: any) {
-            await this.reportStatusRepository.update(record.id, {
-              status: 'FAILED',
-              errorMessage: err.message,
-              retryCount: (record.retryCount ?? 0) + 1,
-            });
-          }
-        }),
-      );
+              const data = await this.downloadDocument(pollResult.reportDocumentId);
+              await this.processSalesData(data);
+
+              await this.reportStatusRepository.update(record.id, {
+                status: 'COMPLETED',
+                errorMessage: null,
+              });
+            } catch (err: any) {
+              await this.reportStatusRepository.update(record.id, {
+                status: 'FAILED',
+                errorMessage: err.message,
+                retryCount: (record.retryCount ?? 0) + 1,
+              });
+            }
+          }),
+        );
+        if (i + BATCH_SIZE < failed.length) {
+          await this.delay(10_000); // delay between retry batches
+        }
+      }
     }
 
     this.logger.warn('Some reports still failed after max retry rounds.');
@@ -346,12 +321,12 @@ export class SalesService {
       return;
     }
 
-    this.logger.log(`processSalesData: top-level keys = [${Object.keys(data).join(', ')}]`);
-
     const aggregates = data.salesAggregate ?? [];
     const asins = data.salesByAsin ?? [];
 
     this.logger.log(`processSalesData: ${aggregates.length} aggregate row(s), ${asins.length} ASIN row(s)`);
+
+    const batchSize = 200;
 
     if (aggregates.length > 0) {
       const mapped = aggregates.map(a => ({
@@ -367,10 +342,11 @@ export class SalesService {
         shippedRevenueCurrency: a.shippedRevenue?.currencyCode ?? 'USD',
         shippedUnits: a.shippedUnits ?? 0,
       }));
-      await this.salesAggregateRepository.upsert(mapped, ['startDate', 'endDate']);
-      this.logger.log(`Inserted to database: ${mapped.length} sales aggregate row(s)`);
-    } else {
-      this.logger.warn('processSalesData: no salesAggregate rows found in document');
+
+      for (let i = 0; i < mapped.length; i += batchSize) {
+        await this.salesAggregateRepository.upsert(mapped.slice(i, i + batchSize), ['startDate', 'endDate']);
+      }
+      this.logger.log(`Inserted sales aggregate rows: ${mapped.length}`);
     }
 
     if (asins.length > 0) {
@@ -388,10 +364,11 @@ export class SalesService {
         shippedRevenueCurrency: a.shippedRevenue?.currencyCode ?? 'USD',
         shippedUnits: a.shippedUnits ?? 0,
       }));
-      await this.salesByAsinRepository.upsert(mapped, ['asin', 'startDate', 'endDate']);
-      this.logger.log(`Inserted to database: ${mapped.length} sales-by-ASIN row(s)`);
-    } else {
-      this.logger.warn('processSalesData: no salesByAsin rows found in document');
+
+      for (let i = 0; i < mapped.length; i += batchSize) {
+        await this.salesByAsinRepository.upsert(mapped.slice(i, i + batchSize), ['asin', 'startDate', 'endDate']);
+      }
+      this.logger.log(`Inserted sales-by-ASIN rows: ${mapped.length}`);
     }
   }
 }
