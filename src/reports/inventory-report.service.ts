@@ -10,6 +10,7 @@ import { AmazonInventoryByAsin } from "./entities/amazon_inventory_by_asin.entit
  
 import { AmazonVendorInventory } from "./entities/amazon_vendor_inventory.entity";
 import { ReportStatusEntity } from "./entities/ReportStatusEntity";
+import { LimiterService } from "src/limiter.service";
 
 export class DuplicateReportError extends Error {
   constructor(message: string = "Duplicate report detected") {
@@ -35,6 +36,7 @@ export class InventoryReportService {
   
     @InjectRepository(AmazonInventoryByAsin)
     private readonly amazonInventoryByAsinRepository: Repository<AmazonInventoryByAsin>,
+    private readonly limiterService: LimiterService,
   ) {}
 
   private async ensureAccessToken(): Promise<void> {
@@ -77,13 +79,15 @@ export class InventoryReportService {
     };
 
     try {
-      const response = await firstValueFrom(this.httpService.post(url, body, {
-        headers: {
-          Authorization: `Bearer ${this.currentAccessToken}`,
-          'x-amz-access-token': this.currentAccessToken,
-          'Content-Type': 'application/json',
-        },
-      }));
+      const response = await this.limiterService.createReportLimiter.schedule(() => 
+        firstValueFrom(this.httpService.post(url, body, {
+          headers: {
+            Authorization: `Bearer ${this.currentAccessToken}`,
+            'x-amz-access-token': this.currentAccessToken,
+            'Content-Type': 'application/json',
+          },
+        }))
+      );
       this.logger.log(`Report creation requested: ${response.data.reportId}`);
       return response.data.reportId;
     } catch (error) {
@@ -169,12 +173,14 @@ export class InventoryReportService {
     await this.ensureAccessToken();
 
     try {
-      const response = await firstValueFrom(this.httpService.get(url, {
-        headers: {
-          Authorization: `Bearer ${this.currentAccessToken}`,
-          'x-amz-access-token': this.currentAccessToken,
-        },
-      }));
+      const response = await this.limiterService.documentLimiter.schedule(() =>
+        firstValueFrom(this.httpService.get(url, {
+          headers: {
+            Authorization: `Bearer ${this.currentAccessToken}`,
+            'x-amz-access-token': this.currentAccessToken,
+          },
+        }))
+      );
 
       const { url: documentUrl, compressionAlgorithm = 'GZIP' } = response.data;
       const documentResponse = await firstValueFrom(this.httpService.get(documentUrl, { responseType: 'arraybuffer' }));
@@ -247,7 +253,8 @@ export class InventoryReportService {
           }
 
           this.logger.log(`Found ${pendingReports.length} pending reports. Processing...`);
-          await this.processWithConcurrency(pendingReports, 35);
+          // Use Promise.all with the global limiter instead of unsafe 35 concurrency
+          await Promise.all(pendingReports.map(report => this.processReportUntilComplete(report)));
           await this.delay(3000);
         }
 
@@ -335,7 +342,7 @@ export class InventoryReportService {
       this.logger.log(`Processing ${inventoryByAsinData.length} inventory records`);
 
       const records = inventoryByAsinData
-        .filter(data => data.asin && data.startDate === data.endDate && !isNaN(new Date(data.startDate).getTime()))
+        .filter(data => data.asin && !isNaN(new Date(data.startDate).getTime()))
         .map(data => ({
           reportType: 'GET_VENDOR_INVENTORY_REPORT',
           startDate: new Date(data.startDate),

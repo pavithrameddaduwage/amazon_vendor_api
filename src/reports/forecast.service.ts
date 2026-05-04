@@ -7,6 +7,7 @@ import { Repository, In } from "typeorm";
 import * as zlib from "zlib";
 import { AmazonForecastByAsin } from "./entities/amazon_forecasting_by_asin.entity";
 import { ReportStatusEntity } from "./entities/ReportStatusEntity";
+import { LimiterService } from "src/limiter.service";
 
 @Injectable()
 export class ForecastService {
@@ -24,7 +25,8 @@ export class ForecastService {
     private readonly forecastRepository: Repository<AmazonForecastByAsin>,
 
     @InjectRepository(ReportStatusEntity)
-    private readonly reportStatusRepository: Repository<ReportStatusEntity>
+    private readonly reportStatusRepository: Repository<ReportStatusEntity>,
+    private readonly limiterService: LimiterService,
   ) {}
 
   private async ensureAccessToken() {
@@ -222,13 +224,15 @@ export class ForecastService {
     try {
       await this.ensureAccessToken();
   
-      const response = await firstValueFrom(
-        this.httpService.get(url, {
-          headers: {
-            Authorization: `Bearer ${this.currentAccessToken}`,
-            'x-amz-access-token': this.currentAccessToken,
-          },
-        })
+      const response = await this.limiterService.documentLimiter.schedule(() =>
+        firstValueFrom(
+          this.httpService.get(url, {
+            headers: {
+              Authorization: `Bearer ${this.currentAccessToken}`,
+              'x-amz-access-token': this.currentAccessToken,
+            },
+          })
+        )
       );
   
       const { url: documentUrl, compressionAlgorithm = 'GZIP' } = response.data;

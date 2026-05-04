@@ -5,6 +5,7 @@ import { HttpModule } from '@nestjs/axios';
  
 import { ReportsModule } from './reports/reports.module';
 import { AuthModule } from './auth.module';
+import { CommonModule } from './common.module';
 import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
@@ -24,6 +25,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     }),
     ScheduleModule.forRoot(),  
     HttpModule,
+    CommonModule,
     ReportsModule,
     AuthModule,
   ],

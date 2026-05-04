@@ -8,6 +8,7 @@ import { AmazonSalesAggregate } from './entities/amazon_sales_aggregate.entity';
 import { AmazonSalesByAsin } from './entities/amazon_sales_by_asin.entity';
 import { ReportStatusEntity } from './entities/ReportStatusEntity';
 import { In, Repository } from 'typeorm';
+import { LimiterService } from 'src/limiter.service';
 
 @Injectable()
 export class SalesReportService {
@@ -27,6 +28,7 @@ export class SalesReportService {
     private readonly salesAggregateRepository: Repository<AmazonSalesAggregate>,
     @InjectRepository(ReportStatusEntity)
     private readonly reportStatusRepository: Repository<ReportStatusEntity>,
+    private readonly limiterService: LimiterService,
   ) {}
 
   private async ensureAccessToken() {
@@ -128,14 +130,16 @@ export class SalesReportService {
     try {
       this.logger.log(`Fetching document for ID: ${reportDocumentId}`);
 
-      const response = await firstValueFrom(
-        this.httpService.get(url, {
-          headers: {
-            Authorization: `Bearer ${this.currentAccessToken}`,
-            'x-amz-access-token': this.currentAccessToken,
-            Accept: 'application/json',
-          },
-        }),
+      const response = await this.limiterService.documentLimiter.schedule(() =>
+        firstValueFrom(
+          this.httpService.get(url, {
+            headers: {
+              Authorization: `Bearer ${this.currentAccessToken}`,
+              'x-amz-access-token': this.currentAccessToken,
+              Accept: 'application/json',
+            },
+          }),
+        ),
       );
 
       const { url: documentUrl, compressionAlgorithm = 'GZIP' } = response.data;
@@ -238,8 +242,8 @@ export class SalesReportService {
   async processVendorSalesReportWithoutReport(data: any) {
     if (!data || typeof data !== 'object') return;
 
-    const aggregates = (data.salesAggregate ?? []).filter((a: any) => a.startDate === a.endDate);
-    const asins = (data.salesByAsin ?? []).filter((a: any) => a.startDate === a.endDate);
+    const aggregates = data.salesAggregate ?? [];
+    const asins = data.salesByAsin ?? [];
 
     if (aggregates.length > 0) {
       const mapped = aggregates.map(a => ({
