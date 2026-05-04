@@ -1,9 +1,9 @@
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { ReportStatusEntity } from './entities/report-status.entity';
+import { Module, Global } from '@nestjs/common';
+import { LimiterService } from './limiter.service';
 
+@Global()
 @Module({
-  imports: [TypeOrmModule.forFeature([ReportStatusEntity])],
-  exports: [TypeOrmModule],
+  providers: [LimiterService],
+  exports: [LimiterService],
 })
 export class CommonModule {}

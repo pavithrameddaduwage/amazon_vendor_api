@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AuthModule } from './auth/auth.module';
+import { CommonModule } from './common/common.module';
 import { SalesModule } from './sales/sales.module';
 import { InventoryModule } from './inventory/inventory.module';
 
@@ -22,6 +23,7 @@ import { InventoryModule } from './inventory/inventory.module';
       synchronize: true,
     }),
     ScheduleModule.forRoot(),
+    CommonModule,
     AuthModule,
     SalesModule,
     InventoryModule,

@@ -8,6 +8,7 @@ import { AuthService } from '../auth/auth.service';
 import { AmazonSalesAggregate } from './entities/amazon_sales_aggregate.entity';
 import { AmazonSalesByAsin } from './entities/amazon_sales_by_asin.entity';
 import { ReportStatusEntity } from '../common/entities/report-status.entity';
+import { LimiterService } from '../common/limiter.service';
 
 const REPORT_TYPE = 'GET_VENDOR_SALES_REPORT';
 const MARKETPLACE_ID = 'ATVPDKIKX0DER';
@@ -36,6 +37,7 @@ export class SalesService {
     private readonly salesAggregateRepository: Repository<AmazonSalesAggregate>,
     @InjectRepository(ReportStatusEntity)
     private readonly reportStatusRepository: Repository<ReportStatusEntity>,
+    private readonly limiterService: LimiterService,
   ) {}
 
   private async ensureAccessToken(): Promise<void> {
@@ -94,10 +96,12 @@ export class SalesService {
       },
     };
 
-    const response = await this.retryOn429(
-      () => firstValueFrom(this.httpService.post(`${BASE_URL}/reports/2021-06-30/reports`, body, { headers: this.authHeaders })),
-      'createReport',
-      SLOW_ENDPOINT_BACKOFF_MS,
+    const response = await this.limiterService.createReportLimiter.schedule(() => 
+      this.retryOn429(
+        () => firstValueFrom(this.httpService.post(`${BASE_URL}/reports/2021-06-30/reports`, body, { headers: this.authHeaders })),
+        'createReport',
+        SLOW_ENDPOINT_BACKOFF_MS,
+      )
     );
 
     const reportId: string = response.data.reportId;
@@ -153,19 +157,21 @@ export class SalesService {
     this.logger.log(`Waiting ${DOCUMENT_WAIT_MS / 1000}s before fetching document metadata: ${reportDocumentId}`);
     await this.delay(DOCUMENT_WAIT_MS);
 
-    const metaResponse = await this.retryOn429(
-      () =>
-        firstValueFrom(
-          this.httpService.get(
-            `${BASE_URL}/reports/2021-06-30/documents/${reportDocumentId}`,
-            {
-              headers: this.authHeaders,
-              params: { enableContentEncodingUrlHeader: true },
-            },
+    const metaResponse = await this.limiterService.documentLimiter.schedule(() =>
+      this.retryOn429(
+        () =>
+          firstValueFrom(
+            this.httpService.get(
+              `${BASE_URL}/reports/2021-06-30/documents/${reportDocumentId}`,
+              {
+                headers: this.authHeaders,
+                params: { enableContentEncodingUrlHeader: true },
+              },
+            ),
           ),
-        ),
-      'getReportDocument',
-      DOCUMENT_ENDPOINT_BACKOFF_MS, // use longer backoff — this endpoint throttles heavily
+        'getReportDocument',
+        DOCUMENT_ENDPOINT_BACKOFF_MS,
+      )
     );
 
     const { url: downloadUrl, compressionAlgorithm } = metaResponse.data;
